@@ -610,6 +610,22 @@ kbd {
   .panel {
     padding: 16px;
   }
+  /* Keep the whole menu, including the Drive button, on a phone screen. */
+  #speed-choices .choice {
+    min-width: 0;
+    padding: 10px 4px;
+  }
+  .lede {
+    font-size: 15px;
+    margin-bottom: 12px;
+  }
+  .baseline {
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  fieldset {
+    margin-bottom: 10px;
+  }
   .stat-value {
     font-size: 17px;
   }

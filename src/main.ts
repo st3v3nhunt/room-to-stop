@@ -125,7 +125,7 @@ function updateBaseline(): void {
   if (predict || changed) return;
   const d = vehicleStop(mphToMs(settings.mph), HIGHWAY_CODE_REACTION_S, settings.vehicle, settings.surface);
   ui.baseline.innerHTML =
-    `An alert driver on ${aVehicle(settings.vehicle)} at <strong>${settings.mph} mph</strong> on ${settings.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
+    `An alert driver ${settings.vehicle === 'motorbike' ? 'on' : 'in'} ${aVehicle(settings.vehicle)} at <strong>${settings.mph} mph</strong> on ${settings.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
     `needs <strong>${Math.round(d.total)} m</strong> to stop: ${Math.round(d.thinking)} m thinking and ${Math.round(d.braking)} m braking.`;
 }
 
