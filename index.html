@@ -36,12 +36,12 @@
           <div class="choice-row" id="mode-choices"></div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="surface-field">
           <legend>Road surface</legend>
           <div class="choice-row" id="surface-choices"></div>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="speed-field">
           <legend>Speed</legend>
           <div class="choice-row" id="speed-choices"></div>
         </fieldset>
@@ -72,6 +72,7 @@
           <span><i class="sw sw-brake"></i>Braking distance</span>
           <span id="legend-hazard"><i class="sw sw-hazard"></i>Hazard</span>
           <span id="legend-guess" class="hidden"><i class="sw sw-guess"></i>Your guess</span>
+          <span id="legend-before" class="hidden"><i class="sw sw-before"></i>Old stopping point</span>
         </div>
 
         <p class="whatif" id="whatif"></p>
@@ -95,6 +96,17 @@
           <button id="guess-less" type="button" aria-label="1 metre shorter">−</button>
           <input id="guess-slider" type="range" min="0" max="1000" step="1" aria-label="Predicted stopping distance" />
           <button id="guess-more" type="button" aria-label="1 metre longer">+</button>
+        </div>
+        <div id="cross-group" class="hidden">
+          <div class="place-head cross-head">
+            <label for="cross-slider">Speed as it passes the old stopping point</label>
+            <output id="cross-readout" for="cross-slider" aria-live="polite">15 mph</output>
+          </div>
+          <div class="guess-row">
+            <button id="cross-less" type="button" aria-label="1 mph slower">−</button>
+            <input id="cross-slider" type="range" min="0" max="70" step="1" />
+            <button id="cross-more" type="button" aria-label="1 mph faster">+</button>
+          </div>
         </div>
         <p class="place-tip">
           <span class="desktop-only">Click or drag on the road, or use the slider or arrow keys.</span>

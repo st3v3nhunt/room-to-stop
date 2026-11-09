@@ -4,6 +4,7 @@ import {
   SURFACE_GRIP,
   type HazardScore,
   type PredictionScore,
+  type WhatChangedScore,
   type StopBreakdown,
   type Surface,
   mphToMs,
@@ -11,6 +12,7 @@ import {
   speedAtDistance,
   stoppingDistance,
 } from './physics';
+import { type ChangeLevel, describeScenario } from './changes';
 
 export interface RunResult {
   surface: Surface;
@@ -33,11 +35,13 @@ export interface RunResult {
 const $ = (id: string) => document.getElementById(id)!;
 
 /** Put back the parts of the panel that Predict the stop changes. */
-function setPanelMode(mode: 'hazard' | 'predict'): void {
-  const predict = mode === 'predict';
+function setPanelMode(mode: 'hazard' | 'predict' | 'changed'): void {
+  const predict = mode !== 'hazard';
   $('legend-hazard').classList.toggle('hidden', predict);
   $('legend-guess').classList.toggle('hidden', !predict);
-  $('stat-reaction-label').textContent = predict ? 'Your guess' : 'Your reaction';
+  $('legend-before').classList.toggle('hidden', mode !== 'changed');
+  $('stat-reaction-label').textContent = mode === 'changed' ? 'New distance' : predict ? 'Your guess' : 'Your reaction';
+  $('change').textContent = mode === 'changed' ? 'Menu' : 'Change road or speed';
   $('footnote').textContent = predict
     ? `The driver reacts in ${HIGHWAY_CODE_REACTION_S} s, the Highway Code figure. Braking assumes a car in good condition.`
     : `Alert driver uses the Highway Code reaction time of ${HIGHWAY_CODE_REACTION_S} s. Braking assumes a car in good condition.`;
@@ -208,4 +212,93 @@ function predictWhatIf(r: PredictResult): string {
 
 function fmtM(m: number): string {
   return `${m < 10 ? m.toFixed(1) : Math.round(m)} m`;
+}
+
+// ---------------------------------------------------------------------------
+// What changed?
+// ---------------------------------------------------------------------------
+
+export interface ChangedResult {
+  level: ChangeLevel;
+  before: StopBreakdown;
+  after: StopBreakdown;
+  /** Predicted new stopping distance (m). */
+  guess: number;
+  /** Predicted and real speed (mph) passing the old stopping point. */
+  crossGuess: number;
+  crossActual: number;
+  afterGrip: number;
+  score: WhatChangedScore;
+  isBest: boolean;
+}
+
+export function renderChangedResults(r: ChangedResult): void {
+  setPanelMode('changed');
+  const s = r.score;
+  $('result-title').textContent =
+    s.total >= 900 ? 'Spot on!' : s.distanceErrorM < 0 ? 'It needed more room than you thought' : 'It stopped sooner than you thought';
+  $('stars').innerHTML = [1, 2, 3].map((i) => `<span class="${i <= s.stars ? '' : 'off'}">★</span>`).join('');
+  $('stars').setAttribute('aria-label', `${s.stars} of 3 stars`);
+
+  $('stat-reaction').innerHTML = `${fmtM(r.after.total)}<span class="stat-sub">You said ${fmtM(r.guess)}</span>`;
+  $('stat-gap-label').textContent = 'Speed at old stop';
+  $('stat-gap').innerHTML = `${Math.round(r.crossActual)} mph<span class="stat-sub">You said ${r.crossGuess} mph</span>`;
+  $('stat-score').innerHTML = `${s.total}<span class="stat-sub">${r.isBest ? 'New best!' : 'out of 1,000'}</span>`;
+
+  const max = Math.max(r.after.total, r.guess, r.before.total) * 1.12;
+  const pct = (m: number) => `${(m / max) * 100}%`;
+  const stopRow = (name: string, d: StopBreakdown, extra = '') => `
+    <div class="bar-row">
+      <div class="bar-name">${name}</div>
+      <div class="bar-track">
+        <div class="bar think" style="left:0;width:${pct(d.thinking)}" title="Thinking ${fmtM(d.thinking)}">${d.thinking / max > 0.12 ? fmtM(d.thinking) : ''}</div>
+        <div class="bar brake" style="left:${pct(d.thinking)};width:${pct(d.braking)}" title="Braking ${fmtM(d.braking)}">${d.braking / max > 0.12 ? fmtM(d.braking) : ''}</div>
+        <div class="bar-total" style="left:${pct(d.total)}">${fmtM(d.total)}</div>
+        ${extra}
+      </div>
+    </div>`;
+  $('bars').innerHTML =
+    stopRow('Before', r.before) +
+    stopRow('Now', r.after, `<div class="guess-line" style="left:${pct(r.guess)}"></div><div class="before-line" style="left:${pct(r.before.total)}"></div>`) +
+    `<div class="bar-row">
+      <div class="bar-name">You guessed</div>
+      <div class="bar-track">
+        <div class="bar guess" style="left:0;width:${pct(r.guess)}"></div>
+        <div class="bar-total" style="left:${pct(r.guess)}">${fmtM(r.guess)}</div>
+      </div>
+    </div>`;
+  $('takeaway').textContent = changedTakeaway(r);
+  $('whatif').textContent = changedExplain(r);
+  $('footnote').textContent = `Both stops use the Highway Code reaction time of ${HIGHWAY_CODE_REACTION_S} s and a car in good condition.`;
+}
+
+function changedTakeaway(r: ChangedResult): string {
+  const { before, after } = r.level;
+  return (
+    `Going from ${describeScenario(before)} to ${describeScenario(after)}, the car was still doing ` +
+    `${Math.round(r.crossActual)} mph where it stopped before, and needed ${fmtM(r.after.total - r.before.total)} more to stop.`
+  );
+}
+
+/** Which part of the stop grew, and why. */
+function changedExplain(r: ChangedResult): string {
+  const { before, after } = r.level;
+  const dThink = r.after.thinking - r.before.thinking;
+  const dBrake = r.after.braking - r.before.braking;
+  const parts: string[] = [];
+  if (after.mph !== before.mph) {
+    const ratio = (after.mph / before.mph) ** 2;
+    parts.push(
+      `Thinking distance grew by ${fmtM(dThink)}, in step with the speed.`,
+      after.surface === before.surface
+        ? `Braking distance grew by ${fmtM(dBrake)}: going ${Math.round((after.mph / before.mph - 1) * 100)}% faster made it ${ratio.toFixed(1)} times as long, because it grows with the square of the speed.`
+        : `Braking distance grew by ${fmtM(dBrake)}: the extra speed makes it grow with the square of the speed, and the ${after.surface} road cut the grip as well.`,
+    );
+  } else {
+    parts.push(
+      `Thinking distance stayed at ${fmtM(r.after.thinking)}: the road surface does not change how long the driver takes to react.`,
+      `Braking distance went from ${fmtM(r.before.braking)} to ${fmtM(r.after.braking)} because the ${after.surface} road has less grip.`,
+    );
+  }
+  return parts.join(' ');
 }
