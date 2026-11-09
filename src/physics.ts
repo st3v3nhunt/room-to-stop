@@ -160,6 +160,38 @@ export function scorePrediction(guess: number, actual: number): PredictionScore 
   return { errorM, total, stars };
 }
 
+export interface WhatChangedScore {
+  /** Guess minus actual new stopping distance (m). */
+  distanceErrorM: number;
+  /** Guessed minus actual speed passing the old stopping point (mph). */
+  speedErrorMph: number;
+  distancePoints: number;
+  speedPoints: number;
+  total: number;
+  stars: 0 | 1 | 2 | 3;
+}
+
+/** Speed guesses within this many mph score full marks for the speed half. */
+const SPEED_FULL_MPH = 2;
+/** Speed guesses this many mph out or more score zero for the speed half. */
+const SPEED_ZERO_MPH = 15;
+
+/**
+ * What changed? score: half for the new stopping distance (scored like
+ * Predict the stop), half for the speed still being done at the old
+ * stopping point (full within 2 mph, zero at 15 mph out).
+ */
+export function scoreWhatChanged(guessM: number, actualM: number, guessMph: number, actualMph: number): WhatChangedScore {
+  const half = MAX_POINTS / 2;
+  const distancePoints = Math.round(scorePrediction(guessM, actualM).total / 2);
+  const speedErrorMph = guessMph - actualMph;
+  const off = Math.abs(speedErrorMph);
+  const speedPoints = Math.round(half * clamp01(1 - (off - SPEED_FULL_MPH) / (SPEED_ZERO_MPH - SPEED_FULL_MPH)));
+  const total = distancePoints + speedPoints;
+  const stars = total >= 800 ? 3 : total >= 550 ? 2 : total > 0 ? 1 : 0;
+  return { distanceErrorM: guessM - actualM, speedErrorMph, distancePoints, speedPoints, total, stars };
+}
+
 function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));
 }

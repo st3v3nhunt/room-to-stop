@@ -661,3 +661,45 @@ kbd {
     width: 460px;
   }
 }
+
+/* ---------- What changed? ---------- */
+
+.cross-head {
+  margin-top: 8px;
+  align-items: center;
+}
+
+.cross-head label {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+#cross-readout {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ideal);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#cross-slider {
+  width: 100%;
+  height: 44px;
+  accent-color: var(--ideal);
+  touch-action: pan-x;
+}
+
+.sw-before {
+  background: var(--ideal);
+  width: 3px;
+}
+
+.before-line {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 3px;
+  margin-left: -1px;
+  background: var(--ideal);
+  border-radius: 2px;
+}
