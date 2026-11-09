@@ -643,7 +643,7 @@ kbd {
     left: auto;
     right: calc(8px + env(safe-area-inset-right));
     transform: none;
-    top: 8px;
+    top: 60px;
     bottom: 8px;
     max-height: none;
     width: min(420px, 55%);
@@ -671,7 +671,7 @@ kbd {
     left: auto;
     right: 24px;
     transform: none;
-    top: 24px;
+    top: 68px;
     bottom: 24px;
     max-height: none;
     width: 460px;
@@ -718,4 +718,33 @@ kbd {
   margin-left: -1px;
   background: var(--ideal);
   border-radius: 2px;
+}
+
+/* ---------- Mute button: always on screen ---------- */
+
+#mute {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  right: calc(12px + env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(15, 23, 32, 0.7);
+  z-index: 5;
+}
+
+#mute .icon-off,
+#mute.muted .icon-on {
+  display: none;
+}
+
+#mute.muted .icon-off {
+  display: block;
+}
+
+#skip-replay {
+  right: calc(64px + env(safe-area-inset-right));
 }

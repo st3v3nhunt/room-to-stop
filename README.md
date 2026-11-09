@@ -10,6 +10,8 @@ Pick a game, a vehicle (car, motorbike or lorry), a road surface (dry, wet or ic
 - **Predict the stop:** a driver sees a hazard at a white line, reacts in the Highway Code's 0.67 s and brakes hard. Before it plays out, drag a marker along the road (or use the slider, +/- buttons or arrow keys) to where you think the car will stop. You score up to 1,000 points for how close you were: full marks within 5% (or 1 m), falling to zero at 60% out. The results show how fast the car was still going at your marker if you guessed short.
 - **What changed?:** watch a car stop, then the game changes the speed, the road surface, both, or swaps the car for a lorry or motorbike. Predict the new stopping distance with the marker, and how fast the car will still be going as it passes the green line where it stopped before. Half the 1,000 points are for the distance (scored like Predict the stop) and half for the speed (full marks within 2 mph, zero at 15 mph out). The results show which part of the stop grew and why.
 
+Sound is made in the browser with the Web Audio API, so there are no audio files: an engine note for each vehicle that rises with speed, road noise, rain and spray in the wet, tyre squeal, hiss or scrape while braking, a lorry's air brakes, and short music in the menu only. Hazards make no sound, so reaction times come from what you see. The mute button in the top-right corner is always on screen and is remembered on the device.
+
 ## Develop
 
 ```sh
@@ -26,6 +28,7 @@ npm run build    # type-check and build to dist/
 - `src/main.ts`: the menu and both level types. In the hazard stop, reaction time is measured from the frame that first shows the hazard to the timestamp of the brake input event. Braking before the hazard appears, or within 0.1 s of it, is a false start. In Predict the stop the whole stop is fixed before it starts, so it plays out the same on every device.
 - Vehicles: a car reproduces the Highway Code table. A motorbike gets 92% of a car's grip when dry, 80% when wet and 70% on ice (less rubber on the road). A lorry gets 72% (85% on ice, where every vehicle is limited by the ice) and its air brakes take 0.4 s to bite, travelled at full speed and counted in the braking distance. These factors are estimates tuned to the design doc ("similar or slightly longer", "noticeably longer"), not published figures.
 - `src/changes.ts`: picks What changed? levels. A change always makes the stop longer (faster, a worse road, or both), and icy roads stay at 40 mph or less so the stop is readable.
+- `src/sound.ts`: the synthesised sounds and menu music. Audio starts on the first tap or key press, as browsers require.
 - `src/results.ts`: the stop breakdown, score, a "what if" comparison and a one-line takeaway.
 
 ## Deploy
