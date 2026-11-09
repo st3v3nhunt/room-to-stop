@@ -172,6 +172,23 @@ export function scoreHazardStop(reactionS: number, hit: boolean, gap: number, id
   return { reactionPoints, gapPoints, total, stars };
 }
 
+/** Reaction times in a Hazard run: this fast or faster scores full marks, this slow or slower none. */
+export const RUN_REACTION_BEST_S = 0.25;
+const RUN_REACTION_WORST_S = 1;
+
+/**
+ * Hazard run score for a clean stop. Stricter than a Single stop, so there
+ * is always something to chase: half for reaction time (0.25 s or faster
+ * scores full, 1 s or slower scores zero) and half for the room left,
+ * relative to `bestGap`, the room a 0.25 s reaction would have left.
+ */
+export function scoreRunStop(reactionS: number, gap: number, bestGap: number): number {
+  const half = MAX_POINTS / 2;
+  const rFrac = clamp01((RUN_REACTION_WORST_S - reactionS) / (RUN_REACTION_WORST_S - RUN_REACTION_BEST_S));
+  const gFrac = bestGap <= 0.5 ? 1 : clamp01(gap / bestGap);
+  return Math.round(half * rFrac) + Math.round(half * gFrac);
+}
+
 export interface PredictionScore {
   /** Guess minus actual stopping distance (m): negative means the guess was short. */
   errorM: number;
@@ -230,6 +247,30 @@ export function scoreWhatChanged(guessM: number, actualM: number, guessMph: numb
   const total = distancePoints + speedPoints;
   const stars = total >= 800 ? 3 : total >= 550 ? 2 : total > 0 ? 1 : 0;
   return { distanceErrorM: guessM - actualM, speedErrorMph, distancePoints, speedPoints, total, stars };
+}
+
+export interface LineScore {
+  /** Metres short of the line; negative means the vehicle crossed it. */
+  gapM: number;
+  total: number;
+  stars: 0 | 1 | 2 | 3;
+}
+
+/** Stops this close to the line (m) score full marks. */
+const LINE_SLACK_M = 0.5;
+
+/**
+ * Stop on the line score: how close to the line the vehicle stopped without
+ * crossing it. Within half a metre scores the full 1,000, falling to zero
+ * when the gap is half the braking distance (plus 3 m, so slow rounds are
+ * not scored too harshly). Crossing the line scores zero.
+ */
+export function scoreLineStop(gapM: number, brakingM: number): LineScore {
+  if (gapM < 0) return { gapM, total: 0, stars: 0 };
+  const frac = clamp01(1 - (gapM - LINE_SLACK_M) / (brakingM * 0.5 + 3));
+  const total = Math.round(MAX_POINTS * frac);
+  const stars = total >= 800 ? 3 : total >= 550 ? 2 : total > 0 ? 1 : 0;
+  return { gapM, total, stars };
 }
 
 function clamp01(x: number): number {

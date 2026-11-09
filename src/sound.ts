@@ -207,6 +207,36 @@ export class Sound {
     osc.stop(ctx.currentTime + 0.45);
   }
 
+  /**
+   * Short tunes for the games made of several stops. They play after the
+   * vehicle has stopped, never while a hazard could appear.
+   */
+  jingle(kind: 'good' | 'great' | 'bad' | 'stage' | 'over'): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const tunes: Record<typeof kind, { semis: number[]; type: OscillatorType; step: number }> = {
+      good: { semis: [0, 7], type: 'triangle', step: 0.09 },
+      great: { semis: [0, 4, 7, 12], type: 'triangle', step: 0.08 },
+      bad: { semis: [-12, -17], type: 'sawtooth', step: 0.16 },
+      stage: { semis: [0, 5, 7], type: 'sine', step: 0.11 },
+      over: { semis: [7, 4, 0, -5], type: 'triangle', step: 0.18 },
+    };
+    const { semis, type, step } = tunes[kind];
+    semis.forEach((semi, i) => {
+      const t = ctx.currentTime + i * step;
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.value = 523 * 2 ** (semi / 12);
+      const g = this.gain(0);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(type === 'sawtooth' ? 0.07 : 0.14, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, t + step * 2.2);
+      osc.connect(g);
+      osc.start(t);
+      osc.stop(t + step * 2.2 + 0.02);
+    });
+  }
+
   /** Current levels, for automated play-testing. */
   debug(): object {
     if (!this.ctx) return { state: 'locked' };

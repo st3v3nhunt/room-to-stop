@@ -113,6 +113,9 @@ export class World {
   private labelClipBottom = 0;
   private surface: Surface = 'dry';
   private sideRange: [number, number] | null = null;
+  /** Camera shake (m), set by kick() and dying away each frame. */
+  private shake = 0;
+  private stopLight = new THREE.Group();
 
   constructor(canvas: HTMLCanvasElement, labelRoot: HTMLElement) {
     this.labelRoot = labelRoot;
@@ -141,7 +144,7 @@ export class World {
     pavement.position.set(-ROAD_WIDTH / 2 - 1.1, 0.07, ROAD_START - ROAD_LENGTH / 2);
     this.scene.add(pavement);
 
-    this.scene.add(this.leftScenery, this.rightScenery, this.runProps, this.paint);
+    this.scene.add(this.leftScenery, this.rightScenery, this.runProps, this.paint, this.stopLight);
 
     this.car = makeVehicle('car', VEHICLE_COLOUR.car);
     this.vehicleCache.set('car', this.car);
@@ -476,6 +479,43 @@ export class World {
     this.hazard = null;
   }
 
+  /**
+   * A stop line across our lane at road position p, with a red traffic light
+   * on each side so it can be seen from a long way back. Null removes it.
+   */
+  setStopLine(p: number | null): void {
+    disposeChildren(this.stopLight);
+    this.stopLight.visible = p !== null;
+    if (p === null) return;
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 0.6), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    line.rotation.x = -Math.PI / 2;
+    // The near edge of the line is at p.
+    line.position.set(LANE_X, 0.04, -0.3);
+    line.renderOrder = 3;
+    this.stopLight.add(line);
+    const dark = new THREE.MeshStandardMaterial({ color: 0x20252b, roughness: 0.8 });
+    const red = new THREE.MeshBasicMaterial({ color: 0xff3b30 });
+    const off = new THREE.MeshStandardMaterial({ color: 0x3a3f45, roughness: 0.6 });
+    for (const x of [-ROAD_WIDTH / 2 - 0.5, 0.1]) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 3.4, 8), dark);
+      pole.position.set(x, 1.7, -0.6);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.7, 0.4), dark);
+      head.position.set(x, 4.0, -0.6);
+      this.stopLight.add(pole, head);
+      [red, off, off].forEach((mat, i) => {
+        const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 8), mat);
+        lamp.position.set(x, 4.52 - i * 0.52, -0.4);
+        this.stopLight.add(lamp);
+      });
+    }
+    this.stopLight.position.z = -p;
+  }
+
+  /** Jolt the chase camera, e.g. when the brakes go on or the car hits something. */
+  kick(metres: number): void {
+    this.shake = Math.max(this.shake, metres);
+  }
+
   setIdealMarker(p: number | null): void {
     this.idealMarker.visible = p !== null;
     if (p !== null) this.idealMarker.position.z = -p;
@@ -572,7 +612,9 @@ export class World {
     const c = this.car;
     const carZ = -(p - c.length / 2);
     const shake = Math.min(speed / 31, 1) * 0.02;
-    this.camera.position.set(LANE_X + 0.2, c.camHeight + Math.sin(time * 23) * shake, carZ + c.length / 2 + c.camBack);
+    const jx = (Math.random() - 0.5) * this.shake;
+    const jy = (Math.random() - 0.5) * this.shake;
+    this.camera.position.set(LANE_X + 0.2 + jx, c.camHeight + Math.sin(time * 23) * shake + jy, carZ + c.length / 2 + c.camBack);
     this.camera.lookAt(LANE_X * 0.6, c.camHeight * 0.48, carZ - 30 - Math.max(0, c.camHeight - 2.3) * 4);
   }
 
@@ -695,6 +737,7 @@ export class World {
   // -------------------------------------------------------------------------
 
   render(dt: number): void {
+    this.shake *= Math.exp(-dt * 7);
     if (this.rain && this.rainVel) {
       const attr = this.rain.geometry.getAttribute('position') as THREE.BufferAttribute;
       const arr = attr.array as Float32Array;
