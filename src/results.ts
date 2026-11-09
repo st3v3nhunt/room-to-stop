@@ -1,7 +1,7 @@
 // The results panel shown after each hazard stop.
 import {
   HIGHWAY_CODE_REACTION_S,
-  SURFACE_GRIP,
+  VEHICLES,
   type HazardScore,
   type PredictionScore,
   type WhatChangedScore,
@@ -10,11 +10,14 @@ import {
   mphToMs,
   msToMph,
   speedAtDistance,
-  stoppingDistance,
+  type Vehicle,
+  vehicleGrip,
+  vehicleStop,
 } from './physics';
 import { type ChangeLevel, describeScenario } from './changes';
 
 export interface RunResult {
+  vehicle: Vehicle;
   surface: Surface;
   mph: number;
   grip: number;
@@ -35,20 +38,26 @@ export interface RunResult {
 const $ = (id: string) => document.getElementById(id)!;
 
 /** Put back the parts of the panel that Predict the stop changes. */
-function setPanelMode(mode: 'hazard' | 'predict' | 'changed'): void {
+/** What the braking figures assume, e.g. "a lorry in good condition, with 0.4 s for its air brakes to bite". */
+function vehicleNote(v: Vehicle): string {
+  const lag = VEHICLES[v].brakeLagS;
+  return `a ${v} in good condition${lag > 0 ? `, with ${lag} s for its air brakes to bite` : ''}`;
+}
+
+function setPanelMode(mode: 'hazard' | 'predict' | 'changed', vehicle: Vehicle = 'car'): void {
   const predict = mode !== 'hazard';
   $('legend-hazard').classList.toggle('hidden', predict);
   $('legend-guess').classList.toggle('hidden', !predict);
   $('legend-before').classList.toggle('hidden', mode !== 'changed');
   $('stat-reaction-label').textContent = mode === 'changed' ? 'New distance' : predict ? 'Your guess' : 'Your reaction';
-  $('change').textContent = mode === 'changed' ? 'Menu' : 'Change road or speed';
+  $('change').textContent = mode === 'changed' ? 'Menu' : 'Change settings';
   $('footnote').textContent = predict
-    ? `The driver reacts in ${HIGHWAY_CODE_REACTION_S} s, the Highway Code figure. Braking assumes a car in good condition.`
-    : `Alert driver uses the Highway Code reaction time of ${HIGHWAY_CODE_REACTION_S} s. Braking assumes a car in good condition.`;
+    ? `The driver reacts in ${HIGHWAY_CODE_REACTION_S} s, the Highway Code figure. Braking assumes ${vehicleNote(vehicle)}.`
+    : `Alert driver uses the Highway Code reaction time of ${HIGHWAY_CODE_REACTION_S} s. Braking assumes ${vehicleNote(vehicle)}.`;
 }
 
 export function renderResults(r: RunResult): void {
-  setPanelMode('hazard');
+  setPanelMode('hazard', r.vehicle);
   $('result-title').textContent = r.hit ? `You hit the ${r.hazardName}` : 'You stopped in time';
   $('stars').innerHTML = [1, 2, 3].map((i) => `<span class="${i <= r.score.stars ? '' : 'off'}">★</span>`).join('');
   $('stars').setAttribute('aria-label', `${r.score.stars} of 3 stars`);
@@ -100,6 +109,14 @@ function takeaway(r: RunResult): string {
       return `Your reaction added ${fmtM(extra)} of thinking distance before the brakes even came on.`;
     }
   }
+  const lag = VEHICLES[r.vehicle].brakeLagS;
+  if (lag > 0) {
+    return `A lorry's air brakes take about ${lag} s to bite, so it travelled another ${fmtM(mphToMs(r.mph) * lag)} at full speed after you pressed the brake.`;
+  }
+  if (r.vehicle === 'motorbike' && r.surface !== 'dry') {
+    const car = vehicleStop(mphToMs(r.mph), r.reaction ?? HIGHWAY_CODE_REACTION_S, 'car', r.surface);
+    return `With less rubber on the road, a motorbike on ${r.surface === 'icy' ? 'ice' : 'a wet road'} needed ${fmtM((r.actual ?? r.ideal).total - car.total)} more than a car would.`;
+  }
   if (r.surface === 'wet') return 'On a wet road your braking distance doubled compared with a dry one.';
   if (r.surface === 'icy') return 'On ice your braking distance was about ten times longer than on a dry road.';
   if (r.reaction !== null && r.reaction <= HIGHWAY_CODE_REACTION_S) {
@@ -110,19 +127,23 @@ function takeaway(r: RunResult): string {
 
 function whatIf(r: RunResult): string {
   const reaction = r.reaction ?? HIGHWAY_CODE_REACTION_S;
-  const now = stoppingDistance(mphToMs(r.mph), reaction, r.grip);
+  const stop = (mph: number, surface: Surface, vehicle: Vehicle = r.vehicle) => vehicleStop(mphToMs(mph), reaction, vehicle, surface);
+  const now = stop(r.mph, r.surface);
   const who = r.reaction === null ? 'an alert driver' : 'you';
+  const clear = (d: number) => (r.hit && d < r.hazardDistance ? ', clear of the hazard' : '');
+  if (r.vehicle !== 'car') {
+    const car = stop(r.mph, r.surface, 'car');
+    return `What if it was a car? With the same reaction, ${who} would stop in ${fmtM(car.total)}, ${fmtM(now.total - car.total)} shorter${clear(car.total)}.`;
+  }
   if (r.surface !== 'dry') {
-    const dry = stoppingDistance(mphToMs(r.mph), reaction, SURFACE_GRIP.dry);
-    const ok = dry.total < r.hazardDistance;
-    return `What if the road was dry? With the same reaction, ${who} would stop in ${fmtM(dry.total)}, ${fmtM(now.total - dry.total)} shorter${r.hit && ok ? ', clear of the hazard' : ''}.`;
+    const dry = stop(r.mph, 'dry');
+    return `What if the road was dry? With the same reaction, ${who} would stop in ${fmtM(dry.total)}, ${fmtM(now.total - dry.total)} shorter${clear(dry.total)}.`;
   }
   if (r.mph > 20) {
-    const slower = stoppingDistance(mphToMs(r.mph - 10), reaction, r.grip);
-    const ok = slower.total < r.hazardDistance;
-    return `What if you were doing ${r.mph - 10} mph? With the same reaction, ${who} would stop in ${fmtM(slower.total)}, ${fmtM(now.total - slower.total)} shorter${r.hit && ok ? ', clear of the hazard' : ''}.`;
+    const slower = stop(r.mph - 10, r.surface);
+    return `What if you were doing ${r.mph - 10} mph? With the same reaction, ${who} would stop in ${fmtM(slower.total)}, ${fmtM(now.total - slower.total)} shorter${clear(slower.total)}.`;
   }
-  const wet = stoppingDistance(mphToMs(r.mph), reaction, SURFACE_GRIP.wet);
+  const wet = stop(r.mph, 'wet');
   return `What if the road was wet? With the same reaction, ${who} would need ${fmtM(wet.total)} to stop, ${fmtM(wet.total - now.total)} more.`;
 }
 
@@ -131,9 +152,9 @@ function whatIf(r: RunResult): string {
 // ---------------------------------------------------------------------------
 
 export interface PredictResult {
+  vehicle: Vehicle;
   surface: Surface;
   mph: number;
-  grip: number;
   /** Predicted stopping distance (m) from where the driver sees the hazard. */
   guess: number;
   actual: StopBreakdown;
@@ -142,7 +163,7 @@ export interface PredictResult {
 }
 
 export function renderPredictResults(r: PredictResult): void {
-  setPanelMode('predict');
+  setPanelMode('predict', r.vehicle);
   const spotOn = r.score.total >= 900;
   $('result-title').textContent = spotOn
     ? 'Spot on!'
@@ -187,26 +208,33 @@ function predictTakeaway(r: PredictResult): string {
   if (r.score.total >= 900) return `${r.score.errorM === 0 ? 'Exactly right.' : `Within ${fmtM(Math.abs(r.score.errorM))}.`} ${brakingShare}`;
   if (r.score.errorM < 0) {
     if (r.guess < d.thinking) {
-      return `At your marker the brakes had not even come on: the car was still doing ${r.mph} mph. It travelled ${fmtM(d.thinking)} while the driver reacted.`;
+      return `At your marker the brakes had not even come on: the ${r.vehicle} was still doing ${r.mph} mph. It travelled ${fmtM(d.thinking)} while the driver reacted.`;
     }
-    const mph = msToMph(speedAtDistance(mphToMs(r.mph), HIGHWAY_CODE_REACTION_S, r.grip, r.guess));
-    return `You were ${fmtM(-r.score.errorM)} short. At your marker the car was still doing ${Math.max(1, Math.round(mph))} mph.`;
+    const mph = msToMph(
+      speedAtDistance(mphToMs(r.mph), HIGHWAY_CODE_REACTION_S, vehicleGrip(r.vehicle, r.surface), r.guess, VEHICLES[r.vehicle].brakeLagS),
+    );
+    return `You were ${fmtM(-r.score.errorM)} short. At your marker the ${r.vehicle} was still doing ${Math.max(1, Math.round(mph))} mph.`;
   }
   return `You allowed ${fmtM(r.score.errorM)} more than it needed. ${brakingShare}`;
 }
 
 function predictWhatIf(r: PredictResult): string {
-  const v = mphToMs(r.mph);
+  const stop = (mph: number, surface: Surface, vehicle: Vehicle = r.vehicle) =>
+    vehicleStop(mphToMs(mph), HIGHWAY_CODE_REACTION_S, vehicle, surface).total;
   const now = r.actual.total;
+  if (r.vehicle !== 'car') {
+    const car = stop(r.mph, r.surface, 'car');
+    return `What if it was a car? It would stop in ${fmtM(car)}, ${fmtM(now - car)} shorter.`;
+  }
   if (r.surface !== 'dry') {
-    const dry = stoppingDistance(v, HIGHWAY_CODE_REACTION_S, SURFACE_GRIP.dry).total;
+    const dry = stop(r.mph, 'dry');
     return `What if the road was dry? It would stop in ${fmtM(dry)}, ${fmtM(now - dry)} shorter.`;
   }
   if (r.mph > 20) {
-    const slower = stoppingDistance(mphToMs(r.mph - 10), HIGHWAY_CODE_REACTION_S, r.grip).total;
+    const slower = stop(r.mph - 10, r.surface);
     return `What if it was doing ${r.mph - 10} mph? It would stop in ${fmtM(slower)}, ${fmtM(now - slower)} shorter.`;
   }
-  const wet = stoppingDistance(v, HIGHWAY_CODE_REACTION_S, SURFACE_GRIP.wet).total;
+  const wet = stop(r.mph, 'wet');
   return `What if the road was wet? It would need ${fmtM(wet)} to stop, ${fmtM(wet - now)} more.`;
 }
 
@@ -227,7 +255,6 @@ export interface ChangedResult {
   /** Predicted and real speed (mph) passing the old stopping point. */
   crossGuess: number;
   crossActual: number;
-  afterGrip: number;
   score: WhatChangedScore;
   isBest: boolean;
 }
@@ -269,13 +296,16 @@ export function renderChangedResults(r: ChangedResult): void {
     </div>`;
   $('takeaway').textContent = changedTakeaway(r);
   $('whatif').textContent = changedExplain(r);
-  $('footnote').textContent = `Both stops use the Highway Code reaction time of ${HIGHWAY_CODE_REACTION_S} s and a car in good condition.`;
+  const lag = VEHICLES[r.level.after.vehicle].brakeLagS;
+  $('footnote').textContent =
+    `Both stops use the Highway Code reaction time of ${HIGHWAY_CODE_REACTION_S} s and vehicles in good condition` +
+    (lag > 0 ? `; the lorry's air brakes take ${lag} s to bite.` : '.');
 }
 
 function changedTakeaway(r: ChangedResult): string {
   const { before, after } = r.level;
   return (
-    `Going from ${describeScenario(before)} to ${describeScenario(after)}, the car was still doing ` +
+    `Going from ${describeScenario(before)} to ${describeScenario(after)}, the ${after.vehicle} was still doing ` +
     `${Math.round(r.crossActual)} mph where it stopped before, and needed ${fmtM(r.after.total - r.before.total)} more to stop.`
   );
 }
@@ -286,6 +316,16 @@ function changedExplain(r: ChangedResult): string {
   const dThink = r.after.thinking - r.before.thinking;
   const dBrake = r.after.braking - r.before.braking;
   const parts: string[] = [];
+  if (after.vehicle !== before.vehicle) {
+    const lag = VEHICLES[after.vehicle].brakeLagS;
+    parts.push(
+      `Thinking distance stayed at ${fmtM(r.after.thinking)}: the same driver reacts just as fast.`,
+      after.vehicle === 'lorry'
+        ? `Braking distance went from ${fmtM(r.before.braking)} to ${fmtM(r.after.braking)}: a heavy lorry cannot brake as hard as a car, and its air brakes take ${lag} s to bite, ${fmtM(mphToMs(after.mph) * lag)} at full speed.`
+        : `Braking distance went from ${fmtM(r.before.braking)} to ${fmtM(r.after.braking)}: a motorbike has two small tyre patches on the road, so it cannot brake as hard as a car${after.surface === 'dry' ? '' : `, and ${after.surface === 'icy' ? 'ice' : 'the wet'} makes that worse`}.`,
+    );
+    return parts.join(' ');
+  }
   if (after.mph !== before.mph) {
     const ratio = (after.mph / before.mph) ** 2;
     parts.push(

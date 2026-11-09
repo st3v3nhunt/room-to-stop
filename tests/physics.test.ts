@@ -9,6 +9,8 @@ import {
   speedAtDistance,
   step,
   stoppingDistance,
+  vehicleGrip,
+  vehicleStop,
 } from '../src/physics';
 
 // Highway Code typical stopping distances (metres) for a car.
@@ -111,5 +113,35 @@ describe('scorePrediction', () => {
     expect(scorePrediction(110, 100).stars).toBe(3);
     expect(scorePrediction(125, 100).stars).toBe(2);
     expect(scorePrediction(150, 100).stars).toBe(1);
+  });
+});
+
+describe('vehicles', () => {
+  const v = mphToMs(50);
+  const stop = (veh: 'car' | 'motorbike' | 'lorry', s: 'dry' | 'wet' | 'icy') => vehicleStop(v, HIGHWAY_CODE_REACTION_S, veh, s);
+  it('a car matches the plain surface grip', () => {
+    expect(stop('car', 'dry').total).toBeCloseTo(stoppingDistance(v, HIGHWAY_CODE_REACTION_S, SURFACE_GRIP.dry).total, 6);
+  });
+  it('a lorry needs noticeably longer, including the air brake lag', () => {
+    const car = stop('car', 'dry');
+    const lorry = stop('lorry', 'dry');
+    expect(lorry.thinking).toBeCloseTo(car.thinking, 6);
+    expect(lorry.total / car.total).toBeGreaterThan(1.3);
+    expect(lorry.total / car.total).toBeLessThan(1.6);
+    expect(lorry.braking).toBeGreaterThan(brakingDistance(v, vehicleGrip('lorry', 'dry')) + 8);
+  });
+  it('a motorbike is similar when dry and suffers more in the wet', () => {
+    const dryRatio = stop('motorbike', 'dry').braking / stop('car', 'dry').braking;
+    const wetRatio = stop('motorbike', 'wet').braking / stop('car', 'wet').braking;
+    expect(dryRatio).toBeGreaterThan(1);
+    expect(dryRatio).toBeLessThan(1.15);
+    expect(wetRatio).toBeGreaterThan(dryRatio);
+  });
+  it('speedAtDistance holds full speed through the brake lag', () => {
+    const lag = 0.4;
+    const atLagEnd = v * (HIGHWAY_CODE_REACTION_S + lag) - 0.1;
+    expect(speedAtDistance(v, HIGHWAY_CODE_REACTION_S, 0.5, atLagEnd, lag)).toBe(v);
+    const d = stoppingDistance(v, HIGHWAY_CODE_REACTION_S, 0.5, lag).total;
+    expect(speedAtDistance(v, HIGHWAY_CODE_REACTION_S, 0.5, d - 0.001, lag)).toBeLessThan(0.5);
   });
 });
