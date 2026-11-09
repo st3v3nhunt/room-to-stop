@@ -31,6 +31,42 @@ export const SURFACE_LABEL: Record<Surface, string> = {
 
 export const SPEEDS_MPH = [20, 30, 40, 50, 60, 70] as const;
 
+export type Vehicle = 'car' | 'motorbike' | 'lorry';
+
+export const VEHICLE_LABEL: Record<Vehicle, string> = {
+  car: 'Car',
+  motorbike: 'Motorbike',
+  lorry: 'Lorry',
+};
+
+export interface VehicleSpec {
+  /**
+   * Share of the car's grip this vehicle can use on each surface. These are
+   * estimates, not published figures: a motorbike has less rubber on the
+   * road and is hit harder by wet and ice; a laden lorry's brakes cannot
+   * lock all those tyres as hard as a car's.
+   */
+  gripFactor: Record<Surface, number>;
+  /** Seconds between pressing the brake and the brakes biting (air brakes on a lorry). */
+  brakeLagS: number;
+}
+
+export const VEHICLES: Record<Vehicle, VehicleSpec> = {
+  car: { gripFactor: { dry: 1, wet: 1, icy: 1 }, brakeLagS: 0 },
+  motorbike: { gripFactor: { dry: 0.92, wet: 0.8, icy: 0.7 }, brakeLagS: 0 },
+  lorry: { gripFactor: { dry: 0.72, wet: 0.72, icy: 0.85 }, brakeLagS: 0.4 },
+};
+
+/** Effective grip for this vehicle on this surface. */
+export function vehicleGrip(vehicle: Vehicle, surface: Surface): number {
+  return SURFACE_GRIP[surface] * VEHICLES[vehicle].gripFactor[surface];
+}
+
+/** Stopping distance for a vehicle in good condition, reacting in reactionS seconds. */
+export function vehicleStop(speedMs: number, reactionS: number, vehicle: Vehicle, surface: Surface): StopBreakdown {
+  return stoppingDistance(speedMs, reactionS, vehicleGrip(vehicle, surface), VEHICLES[vehicle].brakeLagS);
+}
+
 export function mphToMs(mph: number): number {
   return mph * MPH_TO_MS;
 }
@@ -43,8 +79,12 @@ export function thinkingDistance(speedMs: number, reactionS: number): number {
   return speedMs * reactionS;
 }
 
-export function brakingDistance(speedMs: number, grip: number): number {
-  return (speedMs * speedMs) / (2 * grip * G);
+/**
+ * Distance from pressing the brake to standing still. Any brake lag is
+ * travelled at full speed before the brakes bite.
+ */
+export function brakingDistance(speedMs: number, grip: number, lagS = 0): number {
+  return speedMs * lagS + (speedMs * speedMs) / (2 * grip * G);
 }
 
 export interface StopBreakdown {
@@ -53,9 +93,9 @@ export interface StopBreakdown {
   total: number;
 }
 
-export function stoppingDistance(speedMs: number, reactionS: number, grip: number): StopBreakdown {
+export function stoppingDistance(speedMs: number, reactionS: number, grip: number, lagS = 0): StopBreakdown {
   const thinking = thinkingDistance(speedMs, reactionS);
-  const braking = brakingDistance(speedMs, grip);
+  const braking = brakingDistance(speedMs, grip, lagS);
   return { thinking, braking, total: thinking + braking };
 }
 
@@ -64,8 +104,8 @@ export function stoppingDistance(speedMs: number, reactionS: number, grip: numbe
  * moment the hazard appeared. Full speed during the thinking distance, then
  * constant deceleration. Returns 0 once stopped.
  */
-export function speedAtDistance(speedMs: number, reactionS: number, grip: number, distance: number): number {
-  const think = thinkingDistance(speedMs, reactionS);
+export function speedAtDistance(speedMs: number, reactionS: number, grip: number, distance: number, lagS = 0): number {
+  const think = thinkingDistance(speedMs, reactionS + lagS);
   if (distance <= think) return speedMs;
   const v2 = speedMs * speedMs - 2 * grip * G * (distance - think);
   return v2 > 0 ? Math.sqrt(v2) : 0;

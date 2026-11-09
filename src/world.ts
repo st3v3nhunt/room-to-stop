@@ -1,7 +1,7 @@
 // The 3D world: road, scenery, weather, the player's car, hazards, markers and labels.
 import * as THREE from 'three';
-import type { Surface } from './physics';
-import { CAR_LENGTH, type CarModel, type HazardKind, type HazardModel, makeCar, makeHazard, mulberry32 } from './models';
+import type { Surface, Vehicle } from './physics';
+import { type HazardKind, type HazardModel, type VehicleModel, makeHazard, makeVehicle, mulberry32 } from './models';
 
 export const LANE_X = -1.8; // UK: drive on the left.
 const ROAD_WIDTH = 7.3;
@@ -83,7 +83,9 @@ export class World {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(50, 1, 0.1, 3000);
-  readonly car: CarModel;
+  car: VehicleModel;
+  private vehicleKind: Vehicle = 'car';
+  private vehicleCache = new Map<Vehicle, VehicleModel>();
 
   private sun = new THREE.DirectionalLight(0xffffff, 2);
   private hemi = new THREE.HemisphereLight(0xdfefff, 0x445533, 1.2);
@@ -141,7 +143,8 @@ export class World {
 
     this.scene.add(this.leftScenery, this.rightScenery, this.runProps, this.paint);
 
-    this.car = makeCar(0xd8452f);
+    this.car = makeVehicle('car', VEHICLE_COLOUR.car);
+    this.vehicleCache.set('car', this.car);
     this.scene.add(this.car.group);
 
     this.idealMarker = new THREE.Mesh(
@@ -419,13 +422,28 @@ export class World {
   // Per-run objects
   // -------------------------------------------------------------------------
 
+  /** Swap the player's vehicle. */
+  setVehicle(kind: Vehicle): void {
+    if (kind === this.vehicleKind) return;
+    this.scene.remove(this.car.group);
+    let model = this.vehicleCache.get(kind);
+    if (!model) {
+      model = makeVehicle(kind, VEHICLE_COLOUR[kind]);
+      this.vehicleCache.set(kind, model);
+    }
+    this.car = model;
+    this.vehicleKind = kind;
+    this.scene.add(model.group);
+  }
+
   /** Place the player's car with its front bumper at road position p (metres). */
   setCar(p: number, speed: number, braking: boolean, dt: number): void {
-    this.car.group.position.set(LANE_X, 0, -(p - CAR_LENGTH / 2));
-    this.car.brakeLight.emissiveIntensity = braking ? 2.2 : 0;
-    const pitchTarget = braking && speed > 0.2 ? -0.035 : 0;
-    this.car.body.rotation.x += (pitchTarget - this.car.body.rotation.x) * Math.min(1, dt * 8);
-    for (const w of this.car.wheels) w.rotation.x = -p / 0.34;
+    const c = this.car;
+    c.group.position.set(LANE_X, 0, -(p - c.length / 2));
+    c.brakeLight.emissiveIntensity = braking ? 2.2 : 0;
+    const pitchTarget = braking && speed > 0.2 ? -c.pitch : 0;
+    c.body.rotation.x += (pitchTarget - c.body.rotation.x) * Math.min(1, dt * 8);
+    for (const w of c.wheels) w.rotation.x = -p / c.wheelRadius;
   }
 
   placeHazard(kind: HazardKind, hazardP: number): HazardModel {
@@ -551,10 +569,11 @@ export class World {
   chaseCamera(p: number, speed: number, time: number): void {
     this.sideRange = null;
     this.resetFog();
-    const carZ = -(p - CAR_LENGTH / 2);
+    const c = this.car;
+    const carZ = -(p - c.length / 2);
     const shake = Math.min(speed / 31, 1) * 0.02;
-    this.camera.position.set(LANE_X + 0.2, 2.3 + Math.sin(time * 23) * shake, carZ + 7.2);
-    this.camera.lookAt(LANE_X * 0.6, 1.1, carZ - 30);
+    this.camera.position.set(LANE_X + 0.2, c.camHeight + Math.sin(time * 23) * shake, carZ + c.length / 2 + c.camBack);
+    this.camera.lookAt(LANE_X * 0.6, c.camHeight * 0.48, carZ - 30 - Math.max(0, c.camHeight - 2.3) * 4);
   }
 
   private resetFog(): void {
@@ -579,7 +598,7 @@ export class World {
     this.camera.fov = visW / visH < 1 ? 66 : 50;
     this.camera.setViewOffset(visW, visH, 0, 0, W, H);
     this.camera.updateProjectionMatrix();
-    const carZ = -(p - CAR_LENGTH / 2);
+    const carZ = -(p - this.car.length / 2);
     // High up, so distant stopping points are spread out rather than squashed at the horizon.
     this.camera.position.set(LANE_X + 1.6, 14, carZ + 28);
     this.camera.lookAt(LANE_X * 0.5, 0, carZ - 62);
@@ -704,6 +723,8 @@ export class World {
     this.updateLabels();
   }
 }
+
+const VEHICLE_COLOUR: Record<Vehicle, number> = { car: 0xd8452f, motorbike: 0x2a62c9, lorry: 0x2f8a57 };
 
 export function setSegment(mesh: THREE.Mesh, a: number, len: number): void {
   mesh.scale.y = Math.max(0.01, len);

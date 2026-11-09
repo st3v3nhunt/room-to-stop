@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { describeChange, pickChange } from '../src/changes';
-import { HIGHWAY_CODE_REACTION_S, SURFACE_GRIP, mphToMs, scoreWhatChanged, speedAtDistance, stoppingDistance } from '../src/physics';
+import { type Scenario } from '../src/changes';
+import {
+  HIGHWAY_CODE_REACTION_S,
+  SURFACE_GRIP,
+  mphToMs,
+  scoreWhatChanged,
+  speedAtDistance,
+  stoppingDistance,
+  vehicleStop,
+} from '../src/physics';
 import { mulberry32 } from '../src/models';
 
+const total = (s: Scenario) => vehicleStop(mphToMs(s.mph), HIGHWAY_CODE_REACTION_S, s.vehicle, s.surface).total;
 const stop = (mph: number, surface: keyof typeof SURFACE_GRIP) =>
   stoppingDistance(mphToMs(mph), HIGHWAY_CODE_REACTION_S, SURFACE_GRIP[surface]).total;
 
@@ -12,8 +22,8 @@ describe('pickChange', () => {
 
   it('always changes something and always makes the stop longer', () => {
     for (const { before, after } of levels) {
-      expect(before.mph !== after.mph || before.surface !== after.surface).toBe(true);
-      expect(stop(after.mph, after.surface)).toBeGreaterThan(stop(before.mph, before.surface));
+      expect(before.mph !== after.mph || before.surface !== after.surface || before.vehicle !== after.vehicle).toBe(true);
+      expect(total(after)).toBeGreaterThan(total(before));
     }
   });
   it('stays within UK limits and keeps icy stops readable', () => {
@@ -22,14 +32,21 @@ describe('pickChange', () => {
       if (after.surface === 'icy') expect(after.mph).toBeLessThanOrEqual(40);
     }
   });
-  it('uses speed-only, surface-only and combined changes', () => {
-    const kinds = new Set(levels.map(({ before, after }) => `${before.mph !== after.mph}-${before.surface !== after.surface}`));
-    expect(kinds).toEqual(new Set(['true-false', 'false-true', 'true-true']));
+  it('uses speed-only, surface-only, combined and vehicle changes', () => {
+    const kinds = new Set(
+      levels.map(({ before, after }) => `${before.mph !== after.mph}-${before.surface !== after.surface}-${before.vehicle !== after.vehicle}`),
+    );
+    expect(kinds).toEqual(new Set(['true-false-false', 'false-true-false', 'true-true-false', 'false-false-true']));
+  });
+  it('always starts from a car', () => {
+    expect(levels.every((l) => l.before.vehicle === 'car')).toBe(true);
+    expect(new Set(levels.map((l) => l.after.vehicle))).toEqual(new Set(['car', 'lorry', 'motorbike']));
   });
   it('describes what changed', () => {
-    const text = describeChange({ before: { mph: 30, surface: 'dry' }, after: { mph: 40, surface: 'wet' } });
+    const text = describeChange({ before: { vehicle: 'car', mph: 30, surface: 'dry' }, after: { vehicle: 'lorry', mph: 40, surface: 'wet' } });
     expect(text).toContain('(was 30)');
     expect(text).toContain('(was dry)');
+    expect(text).toContain('(was a car)');
   });
 });
 

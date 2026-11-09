@@ -3,9 +3,10 @@ import {
   G,
   HIGHWAY_CODE_REACTION_S,
   SPEEDS_MPH,
-  SURFACE_GRIP,
   SURFACE_LABEL,
+  VEHICLE_LABEL,
   type Surface,
+  type Vehicle,
   mphToMs,
   msToMph,
   scoreHazardStop,
@@ -13,6 +14,9 @@ import {
   scoreWhatChanged,
   speedAtDistance,
   stoppingDistance,
+  vehicleGrip,
+  vehicleStop,
+  VEHICLES,
 } from './physics';
 import { type ChangeLevel, type Scenario, describeChange, describeScenario, pickChange } from './changes';
 import type { HazardKind } from './models';
@@ -64,7 +68,11 @@ const MODE_LEDE: Record<Mode, string> = {
 };
 
 const SURFACES: Surface[] = ['dry', 'wet', 'icy'];
-const settings = { surface: 'dry' as Surface, mph: 30, mode: 'hazard' as Mode };
+const aVehicle = (v: Vehicle) => `a ${v}`;
+const capital = (t: string) => t[0].toUpperCase() + t.slice(1);
+
+const VEHICLE_KINDS: Vehicle[] = ['car', 'motorbike', 'lorry'];
+const settings = { surface: 'dry' as Surface, mph: 30, mode: 'hazard' as Mode, vehicle: 'car' as Vehicle };
 
 function choiceButtons<T extends string | number>(
   root: HTMLElement,
@@ -90,6 +98,10 @@ function choiceButtons<T extends string | number>(
 }
 
 choiceButtons($('mode-choices'), MODES, (m) => MODE_LABEL[m], () => settings.mode, (m) => (settings.mode = m));
+choiceButtons($('vehicle-choices'), VEHICLE_KINDS, (v) => VEHICLE_LABEL[v], () => settings.vehicle, (v) => {
+  settings.vehicle = v;
+  world.setVehicle(v);
+});
 choiceButtons($('surface-choices'), SURFACES, (s) => SURFACE_LABEL[s], () => settings.surface, (s) => {
   settings.surface = s;
   world.setSurface(s);
@@ -106,12 +118,14 @@ function updateBaseline(): void {
   // What changed? picks its own speeds and roads for each level.
   $('surface-field').classList.toggle('hidden', changed);
   $('speed-field').classList.toggle('hidden', changed);
+  $('vehicle-field').classList.toggle('hidden', changed);
+  world.setVehicle(changed ? 'car' : settings.vehicle);
   // In Predict the stop the baseline would give the answer away.
   ui.baseline.classList.toggle('hidden', predict || changed);
   if (predict || changed) return;
-  const d = stoppingDistance(mphToMs(settings.mph), HIGHWAY_CODE_REACTION_S, SURFACE_GRIP[settings.surface]);
+  const d = vehicleStop(mphToMs(settings.mph), HIGHWAY_CODE_REACTION_S, settings.vehicle, settings.surface);
   ui.baseline.innerHTML =
-    `An alert driver at <strong>${settings.mph} mph</strong> on ${settings.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
+    `An alert driver on ${aVehicle(settings.vehicle)} at <strong>${settings.mph} mph</strong> on ${settings.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
     `needs <strong>${Math.round(d.total)} m</strong> to stop: ${Math.round(d.thinking)} m thinking and ${Math.round(d.braking)} m braking.`;
 }
 
@@ -149,6 +163,9 @@ let phase: Phase = 'menu';
 
 interface Run {
   mode: Mode;
+  vehicle: Vehicle;
+  /** Seconds after the brake is pressed before the brakes bite. */
+  lag: number;
   surface: Surface;
   mph: number;
   v: number;
@@ -211,8 +228,8 @@ function startRun(): void {
   }
   changed = null;
   const v = mphToMs(settings.mph);
-  const grip = SURFACE_GRIP[settings.surface];
-  const ideal = stoppingDistance(v, HIGHWAY_CODE_REACTION_S, grip);
+  const grip = vehicleGrip(settings.vehicle, settings.surface);
+  const ideal = vehicleStop(v, HIGHWAY_CODE_REACTION_S, settings.vehicle, settings.surface);
   const plannedAppearT = 3 + Math.random() * 3.5;
   // A fair distance: an alert driver stops with a little room to spare.
   const fair = ideal.total * (1.12 + Math.random() * 0.25) + 2;
@@ -221,6 +238,7 @@ function startRun(): void {
   const hazardKind = pickHazard(dist);
 
   world.setSurface(settings.surface);
+  world.setVehicle(settings.vehicle);
   world.buildScenery(Math.floor(Math.random() * 1e9), hazardKind === 'car' ? hazardP : null);
   world.placeHazard(hazardKind, hazardP);
   world.clearPaint();
@@ -231,6 +249,8 @@ function startRun(): void {
 
   run = {
     mode: 'hazard',
+    vehicle: settings.vehicle,
+    lag: VEHICLES[settings.vehicle].brakeLagS,
     surface: settings.surface,
     mph: settings.mph,
     v,
@@ -271,9 +291,10 @@ let idealLabel: HTMLDivElement | null = null;
 
 /** Exact position (m) and speed (m/s) of the car's front bumper at time t (s) into the run. */
 function motionAt(r: Run, t: number): { p: number; speed: number } {
-  if (r.brakeT === null || t <= r.brakeT) return { p: r.v * t, speed: r.v };
-  const pB = r.v * r.brakeT;
-  const tau = t - r.brakeT;
+  // Full speed until the brakes bite: the brake is pressed at brakeT, then any lag.
+  if (r.brakeT === null || t <= r.brakeT + r.lag) return { p: r.v * t, speed: r.v };
+  const pB = r.v * (r.brakeT + r.lag);
+  const tau = t - r.brakeT - r.lag;
   const tStop = r.v / r.decel;
   if (tau >= tStop) return { p: pB + (r.v * r.v) / (2 * r.decel), speed: 0 };
   return { p: pB + r.v * tau - 0.5 * r.decel * tau * tau, speed: r.v - r.decel * tau };
@@ -432,7 +453,7 @@ function updateDrive(nowMs: number, dt: number): void {
     r.endT = timeAtPosition(r, r.hazardP);
     halt(true);
   } else if (speed === 0 && r.brakeT !== null) {
-    r.endT = r.brakeT + r.v / r.decel;
+    r.endT = r.brakeT + r.lag + r.v / r.decel;
     halt(false);
   }
 
@@ -459,7 +480,7 @@ function updateDrive(nowMs: number, dt: number): void {
 
 function speedAtPosition(r: Run, pos: number): number {
   if (r.brakeT === null) return r.v;
-  const pB = r.v * r.brakeT;
+  const pB = r.v * (r.brakeT + r.lag);
   if (pos <= pB) return r.v;
   const v2 = r.v * r.v - 2 * r.decel * (pos - pB);
   return v2 > 0 ? Math.sqrt(v2) : 0;
@@ -467,10 +488,10 @@ function speedAtPosition(r: Run, pos: number): number {
 
 function timeAtPosition(r: Run, pos: number): number {
   if (r.brakeT === null) return pos / r.v;
-  const pB = r.v * r.brakeT;
+  const pB = r.v * (r.brakeT + r.lag);
   if (pos <= pB) return pos / r.v;
   const vAt = speedAtPosition(r, pos);
-  return r.brakeT + (r.v - vAt) / r.decel;
+  return r.brakeT + r.lag + (r.v - vAt) / r.decel;
 }
 
 function halt(hit: boolean): void {
@@ -655,13 +676,14 @@ function showResults(): void {
   const appearP = r.v * r.appearT!;
   const dHazard = r.hazardP - appearP;
   const reaction = r.reaction;
-  const actual = reaction === null ? null : stoppingDistance(r.v, reaction, r.grip);
+  const actual = reaction === null ? null : stoppingDistance(r.v, reaction, r.grip, r.lag);
   const idealGap = dHazard - r.ideal.total;
   const gap = r.hit || !actual ? 0 : dHazard - actual.total;
   const score = scoreHazardStop(reaction ?? 99, r.hit, gap, idealGap);
   const isBest = saveBest('hazard', score.total);
 
   const result: RunResult = {
+    vehicle: r.vehicle,
     surface: r.surface,
     mph: r.mph,
     grip: r.grip,
@@ -719,16 +741,19 @@ const sliderToGuess = (s: number) => MAX_GUESS * (s / SLIDER_MAX) ** 2;
  */
 function fixedRun(mode: Mode, sc: Scenario, lineP: number): Run {
   const v = mphToMs(sc.mph);
-  const grip = SURFACE_GRIP[sc.surface];
+  const grip = vehicleGrip(sc.vehicle, sc.surface);
   const appearT = lineP / v;
+  world.setVehicle(sc.vehicle);
   return {
     mode,
+    vehicle: sc.vehicle,
+    lag: VEHICLES[sc.vehicle].brakeLagS,
     surface: sc.surface,
     mph: sc.mph,
     v,
     grip,
     decel: grip * G,
-    ideal: stoppingDistance(v, HIGHWAY_CODE_REACTION_S, grip),
+    ideal: vehicleStop(v, HIGHWAY_CODE_REACTION_S, sc.vehicle, sc.surface),
     hazardKind: null,
     hazardP: Infinity,
     plannedAppearT: appearT,
@@ -778,7 +803,7 @@ function startPredict(): void {
   ui.placeTitle.textContent = 'Where will it stop?';
   ui.crossGroup.classList.add('hidden');
   ui.placeBrief.innerHTML =
-    `A car doing <strong>${run.mph} mph</strong> on ${run.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[run.surface].toLowerCase()}</strong> road. ` +
+    `${capital(aVehicle(run.vehicle))} doing <strong>${run.mph} mph</strong> on ${run.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[run.surface].toLowerCase()}</strong> road. ` +
     `The driver sees a hazard at the white line, reacts in ${HIGHWAY_CODE_REACTION_S} s, then brakes as hard as they can.`;
   beginPlacing(START_GUESS);
 }
@@ -814,7 +839,8 @@ const CHANGED_LINE_P = 40;
 
 function startChanged(): void {
   const level = pickChange(Math.random);
-  const before = stoppingDistance(mphToMs(level.before.mph), HIGHWAY_CODE_REACTION_S, SURFACE_GRIP[level.before.surface]);
+  const { vehicle: av, mph: amph, surface: as } = level.after;
+  const before = vehicleStop(mphToMs(level.before.mph), HIGHWAY_CODE_REACTION_S, level.before.vehicle, level.before.surface);
   changed = {
     level,
     stage: 'before',
@@ -822,13 +848,13 @@ function startChanged(): void {
     oldTotal: before.total,
     crossGuess: 0,
     crossActual: msToMph(
-      speedAtDistance(mphToMs(level.after.mph), HIGHWAY_CODE_REACTION_S, SURFACE_GRIP[level.after.surface], before.total),
+      speedAtDistance(mphToMs(amph), HIGHWAY_CODE_REACTION_S, vehicleGrip(av, as), before.total, VEHICLES[av].brakeLagS),
     ),
     crossLabelShown: false,
   };
   setUpFixedRoad(level.before.surface, changed.seed);
   run = fixedRun('changed', level.before, CHANGED_LINE_P);
-  run.endT = run.brakeT! + run.v / run.decel;
+  run.endT = run.brakeT! + run.lag + run.v / run.decel;
   idealLabel = null;
   hidePanels();
   ui.hud.classList.add('hidden');
@@ -877,8 +903,8 @@ $('cross-more').addEventListener('click', () => changed && setCross(changed.cros
 
 function showChangedResults(r: Run): void {
   const c = changed!;
-  const { before, after } = c.level;
-  const beforeStop = stoppingDistance(mphToMs(before.mph), HIGHWAY_CODE_REACTION_S, SURFACE_GRIP[before.surface]);
+  const { before } = c.level;
+  const beforeStop = vehicleStop(mphToMs(before.mph), HIGHWAY_CODE_REACTION_S, before.vehicle, before.surface);
   const score = scoreWhatChanged(r.guess, r.ideal.total, c.crossGuess, c.crossActual);
   const isBest = saveBest('changed', score.total);
   renderChangedResults({
@@ -890,7 +916,6 @@ function showChangedResults(r: Run): void {
     crossActual: c.crossActual,
     score,
     isBest,
-    afterGrip: SURFACE_GRIP[after.surface],
   });
   revealResults();
 }
@@ -973,7 +998,7 @@ function showPredictResults(r: Run): void {
   const actual = r.ideal;
   const score = scorePrediction(r.guess, actual.total);
   const isBest = saveBest('predict', score.total);
-  renderPredictResults({ surface: r.surface, mph: r.mph, grip: r.grip, guess: r.guess, actual, score, isBest });
+  renderPredictResults({ vehicle: r.vehicle, surface: r.surface, mph: r.mph, guess: r.guess, actual, score, isBest });
   revealResults();
 }
 
