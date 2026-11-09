@@ -21,12 +21,14 @@ import {
 import { type ChangeLevel, type Scenario, describeChange, describeScenario, pickChange } from './changes';
 import type { HazardKind } from './models';
 import { LANE_X, World, setSegment } from './world';
+import { Sound, type SoundScene } from './sound';
 import { renderChangedResults, renderPredictResults, renderResults, type RunResult } from './results';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const canvas = $<HTMLCanvasElement>('scene');
 const world = new World(canvas, $('labels'));
+const sound = new Sound();
 
 const ui = {
   menu: $('menu'),
@@ -125,7 +127,7 @@ function updateBaseline(): void {
   if (predict || changed) return;
   const d = vehicleStop(mphToMs(settings.mph), HIGHWAY_CODE_REACTION_S, settings.vehicle, settings.surface);
   ui.baseline.innerHTML =
-    `An alert driver on ${aVehicle(settings.vehicle)} at <strong>${settings.mph} mph</strong> on ${settings.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
+    `An alert driver ${settings.vehicle === 'motorbike' ? 'on' : 'in'} ${aVehicle(settings.vehicle)} at <strong>${settings.mph} mph</strong> on ${settings.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
     `needs <strong>${Math.round(d.total)} m</strong> to stop: ${Math.round(d.thinking)} m thinking and ${Math.round(d.braking)} m braking.`;
 }
 
@@ -188,6 +190,8 @@ interface Run {
   impactSpeed: number;
   /** Predict the stop: the player's predicted stopping distance (m) from where the hazard is seen. */
   guess: number;
+  /** Whether the brake-press sound has played. */
+  brakeHeard?: boolean;
 }
 
 /** A What changed? level in progress: the baseline stop plays first, then the changed one. */
@@ -458,6 +462,12 @@ function updateDrive(nowMs: number, dt: number): void {
   }
 
   world.setCar(p, speed, r.brakeT !== null && t >= r.brakeT, dt);
+  if (r.brakeT !== null && t >= r.brakeT && !r.brakeHeard) {
+    r.brakeHeard = true;
+    sound.brakePressed();
+  }
+  audio.speed = speed;
+  audio.braking = r.brakeT !== null && t >= r.brakeT + r.lag;
   world.updateHazard(r.appearT === null ? (justAppeared ? 0 : -1) : t - r.appearT);
   // The faint ideal marker shows where an alert driver would stop if a hazard
   // appeared now. Once the hazard appears it stays where they would stop.
@@ -499,6 +509,7 @@ function halt(hit: boolean): void {
   ui.brakeHint.classList.add('hidden');
   ui.predictHint.classList.add('hidden');
   if (hit) {
+    sound.impact();
     ui.flash.classList.add('on');
     requestAnimationFrame(() => requestAnimationFrame(() => ui.flash.classList.remove('on')));
   }
@@ -1014,6 +1025,10 @@ function fmtM(m: number): string {
 // Main loop
 // ---------------------------------------------------------------------------
 
+/** What the drive sounds should follow, updated each driving frame. */
+const audio = { speed: 0, braking: false };
+const SCENE: Partial<Record<Phase, SoundScene>> = { menu: 'menu', place: 'idle', drive: 'drive' };
+
 let idleT = 0;
 function frame(nowMs: number): void {
   const dt = Math.min(0.1, (nowMs - lastFrameMs) / 1000);
@@ -1033,9 +1048,34 @@ function frame(nowMs: number): void {
   } else {
     world.render(dt);
   }
+  sound.setVehicle(run?.vehicle ?? (settings.mode === 'changed' ? 'car' : settings.vehicle));
+  sound.update(SCENE[phase] ?? 'quiet', run?.surface ?? settings.surface, audio.speed, audio.braking);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+
+// ---------------------------------------------------------------------------
+// Sound: browsers only allow audio after the player touches the page.
+// ---------------------------------------------------------------------------
+
+const muteBtn = $<HTMLButtonElement>('mute');
+function showMute(): void {
+  muteBtn.setAttribute('aria-pressed', String(sound.isMuted));
+  muteBtn.setAttribute('aria-label', sound.isMuted ? 'Sound off. Turn sound on' : 'Sound on. Turn sound off');
+  muteBtn.classList.toggle('muted', sound.isMuted);
+}
+showMute();
+const unlockAudio = () => sound.unlock();
+window.addEventListener('pointerdown', unlockAudio, { capture: true });
+window.addEventListener('keydown', unlockAudio, { capture: true });
+muteBtn.addEventListener('click', () => {
+  sound.unlock();
+  sound.setMuted(!sound.isMuted);
+  showMute();
+  muteBtn.blur();
+});
+// Keep a tap on the mute button from also counting as a brake.
+muteBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
 
 // Read-only hook for automated play-testing.
 (window as unknown as { __rts: () => object }).__rts = () => ({
@@ -1046,5 +1086,6 @@ requestAnimationFrame(frame);
   guess: run?.guess,
   changedStage: changed?.stage,
   crossActual: changed?.crossActual,
+  sound: sound.debug(),
   stoppingDistance: run?.ideal.total,
 });
