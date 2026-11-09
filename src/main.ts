@@ -9,11 +9,12 @@ import {
   mphToMs,
   msToMph,
   scoreHazardStop,
+  scorePrediction,
   stoppingDistance,
 } from './physics';
 import type { HazardKind } from './models';
 import { World, setSegment } from './world';
-import { renderResults, type RunResult } from './results';
+import { renderPredictResults, renderResults, type RunResult } from './results';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -32,14 +33,29 @@ const ui = {
   skip: $<HTMLButtonElement>('skip-replay'),
   baseline: $('baseline'),
   best: $('best'),
+  lede: $('lede'),
+  start: $<HTMLButtonElement>('start'),
+  place: $('place'),
+  placeBrief: $('place-brief'),
+  guessReadout: $('guess-readout'),
+  guessSlider: $<HTMLInputElement>('guess-slider'),
+  predictHint: $('predict-hint'),
 };
 
 // ---------------------------------------------------------------------------
 // Settings and menu
 // ---------------------------------------------------------------------------
 
+type Mode = 'hazard' | 'predict';
+const MODES: Mode[] = ['hazard', 'predict'];
+const MODE_LABEL: Record<Mode, string> = { hazard: 'Hazard stop', predict: 'Predict the stop' };
+const MODE_LEDE: Record<Mode, string> = {
+  hazard: 'A hazard will appear on the road ahead. Brake as fast as you can, then see how far you really travelled.',
+  predict: 'A driver sees a hazard and brakes. Put a marker on the road where you think the car will stop, then watch it play out.',
+};
+
 const SURFACES: Surface[] = ['dry', 'wet', 'icy'];
-const settings = { surface: 'dry' as Surface, mph: 30 };
+const settings = { surface: 'dry' as Surface, mph: 30, mode: 'hazard' as Mode };
 
 function choiceButtons<T extends string | number>(
   root: HTMLElement,
@@ -64,6 +80,7 @@ function choiceButtons<T extends string | number>(
   }
 }
 
+choiceButtons($('mode-choices'), MODES, (m) => MODE_LABEL[m], () => settings.mode, (m) => (settings.mode = m));
 choiceButtons($('surface-choices'), SURFACES, (s) => SURFACE_LABEL[s], () => settings.surface, (s) => {
   settings.surface = s;
   world.setSurface(s);
@@ -72,25 +89,33 @@ choiceButtons($('surface-choices'), SURFACES, (s) => SURFACE_LABEL[s], () => set
 choiceButtons($('speed-choices'), SPEEDS_MPH, (m) => `${m}`, () => settings.mph, (m) => (settings.mph = m));
 
 function updateBaseline(): void {
+  const predict = settings.mode === 'predict';
+  ui.lede.textContent = MODE_LEDE[settings.mode];
+  ui.start.textContent = predict ? 'Place your marker' : 'Drive';
+  showBest();
+  // In Predict the stop the baseline would give the answer away.
+  ui.baseline.classList.toggle('hidden', predict);
+  if (predict) return;
   const d = stoppingDistance(mphToMs(settings.mph), HIGHWAY_CODE_REACTION_S, SURFACE_GRIP[settings.surface]);
   ui.baseline.innerHTML =
-    `An alert driver at <strong>${settings.mph} mph</strong> on a <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
+    `An alert driver at <strong>${settings.mph} mph</strong> on ${settings.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
     `needs <strong>${Math.round(d.total)} m</strong> to stop: ${Math.round(d.thinking)} m thinking and ${Math.round(d.braking)} m braking.`;
 }
-updateBaseline();
 
-function loadBest(): number {
+const bestKey = (mode: Mode) => (mode === 'predict' ? 'rts-best-predict' : 'rts-best');
+
+function loadBest(mode: Mode = settings.mode): number {
   try {
-    return Number(localStorage.getItem('rts-best') ?? 0) || 0;
+    return Number(localStorage.getItem(bestKey(mode)) ?? 0) || 0;
   } catch {
     return 0;
   }
 }
-function saveBest(score: number): boolean {
-  const best = loadBest();
+function saveBest(mode: Mode, score: number): boolean {
+  const best = loadBest(mode);
   if (score <= best) return false;
   try {
-    localStorage.setItem('rts-best', String(score));
+    localStorage.setItem(bestKey(mode), String(score));
   } catch {
     /* storage unavailable: keep playing */
   }
@@ -98,25 +123,28 @@ function saveBest(score: number): boolean {
 }
 function showBest(): void {
   const b = loadBest();
-  ui.best.textContent = b > 0 ? `Your best score: ${b} / 1,000` : '';
+  ui.best.textContent = b > 0 ? `Your best ${MODE_LABEL[settings.mode]} score: ${b} / 1,000` : '';
 }
-showBest();
+updateBaseline();
 
 // ---------------------------------------------------------------------------
 // Run state
 // ---------------------------------------------------------------------------
 
-type Phase = 'menu' | 'drive' | 'halted' | 'replay' | 'results' | 'message';
+type Phase = 'menu' | 'place' | 'drive' | 'halted' | 'replay' | 'results' | 'message';
 let phase: Phase = 'menu';
 
 interface Run {
+  mode: Mode;
   surface: Surface;
   mph: number;
   v: number;
   grip: number;
   decel: number;
   ideal: ReturnType<typeof stoppingDistance>;
-  hazardKind: HazardKind;
+  /** Null in Predict the stop, where there is no hazard to hit. */
+  hazardKind: HazardKind | null;
+  /** Road position of the hazard's near edge (Infinity when there is none). */
   hazardP: number;
   /** Planned seconds after the start before the hazard appears. */
   plannedAppearT: number;
@@ -128,6 +156,8 @@ interface Run {
   endT: number | null;
   hit: boolean;
   impactSpeed: number;
+  /** Predict the stop: the player's predicted stopping distance (m) from where the hazard is seen. */
+  guess: number;
 }
 
 let run: Run | null = null;
@@ -143,6 +173,10 @@ function pickHazard(dist: number): HazardKind {
 const MAX_HAZARD_DISTANCE = 230;
 
 function startRun(): void {
+  if (settings.mode === 'predict') {
+    startPredict();
+    return;
+  }
   const v = mphToMs(settings.mph);
   const grip = SURFACE_GRIP[settings.surface];
   const ideal = stoppingDistance(v, HIGHWAY_CODE_REACTION_S, grip);
@@ -158,10 +192,12 @@ function startRun(): void {
   world.placeHazard(hazardKind, hazardP);
   world.clearPaint();
   world.clearLabels();
+  world.setGuessMarker(null);
   world.setInset({ right: 0, bottom: 0 });
   world.setSceneryRightVisible(true);
 
   run = {
+    mode: 'hazard',
     surface: settings.surface,
     mph: settings.mph,
     v,
@@ -179,6 +215,7 @@ function startRun(): void {
     endT: null,
     hit: false,
     impactSpeed: 0,
+    guess: 0,
   };
 
   idealLabel = world.addLabel(`Alert driver stops: ${Math.round(ideal.total)} m`, ideal.total, 0.2, 'ideal');
@@ -187,6 +224,8 @@ function startRun(): void {
   ui.menu.classList.add('hidden');
   ui.results.classList.add('hidden');
   ui.message.classList.add('hidden');
+  ui.place.classList.add('hidden');
+  ui.predictHint.classList.add('hidden');
   ui.hud.classList.remove('hidden');
   ui.brakeHint.classList.remove('hidden');
   ui.hudSurface.textContent = SURFACE_LABEL[run.surface];
@@ -208,7 +247,7 @@ function motionAt(r: Run, t: number): { p: number; speed: number } {
 }
 
 function onBrake(timeStamp: number): void {
-  if (phase !== 'drive' || !run || run.brakeT !== null) return;
+  if (phase !== 'drive' || !run || run.mode !== 'hazard' || run.brakeT !== null) return;
   if (run.appearMs === null || run.appearT === null) {
     falseStart('You braked before anything appeared. Brake only when you see a hazard.');
     return;
@@ -262,15 +301,18 @@ function showMenu(): void {
   world.clearPaint();
   world.clearHazard();
   world.setIdealMarker(null);
+  world.setGuessMarker(null);
+  world.resize();
   world.setInset({ right: 0, bottom: 0 });
   world.setSceneryRightVisible(true);
   ui.results.classList.add('hidden');
   ui.message.classList.add('hidden');
+  ui.place.classList.add('hidden');
+  ui.predictHint.classList.add('hidden');
   ui.hud.classList.add('hidden');
   ui.brakeHint.classList.add('hidden');
   ui.skip.classList.add('hidden');
   ui.menu.classList.remove('hidden');
-  showBest();
   updateBaseline();
 }
 
@@ -281,6 +323,10 @@ function showMenu(): void {
 window.addEventListener(
   'keydown',
   (e) => {
+    if (phase === 'place') {
+      onPlaceKey(e);
+      return;
+    }
     if (e.code !== 'Space' && e.key !== ' ') return;
     if (phase === 'drive') {
       e.preventDefault();
@@ -294,11 +340,23 @@ canvas.addEventListener('pointerdown', (e) => {
   if (phase === 'drive') {
     e.preventDefault();
     onBrake(e.timeStamp);
+  } else if (phase === 'place') {
+    e.preventDefault();
+    dragging = true;
+    canvas.setPointerCapture(e.pointerId);
+    guessFromPointer(e);
   }
 });
+canvas.addEventListener('pointermove', (e) => {
+  if (phase === 'place' && dragging) guessFromPointer(e);
+});
+const endDrag = () => (dragging = false);
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && phase === 'drive') {
+  // Predict the stop plays out on its own, so only the hazard stop needs pausing.
+  if (document.hidden && phase === 'drive' && run?.mode === 'hazard') {
     phase = 'message';
     ui.brakeHint.classList.add('hidden');
     showMessage('Paused', 'The game was hidden during the drive, so that run does not count.', [
@@ -313,7 +371,10 @@ $('again').addEventListener('click', startRun);
 $('change').addEventListener('click', showMenu);
 $('replay').addEventListener('click', () => startReplay());
 ui.skip.addEventListener('click', () => finishReplay());
-window.addEventListener('resize', () => world.resize());
+window.addEventListener('resize', () => {
+  world.resize();
+  if (phase === 'place') framePlace();
+});
 
 // ---------------------------------------------------------------------------
 // Driving
@@ -326,7 +387,7 @@ function updateDrive(nowMs: number, dt: number): void {
 
   // Hazard appears on the first frame at or after its planned time.
   let justAppeared = false;
-  if (r.appearMs === null && t >= r.plannedAppearT) justAppeared = true;
+  if (r.mode === 'hazard' && r.appearMs === null && t >= r.plannedAppearT) justAppeared = true;
 
   if (p >= r.hazardP && r.appearT !== null) {
     // The car reached the hazard while still moving: sudden halt.
@@ -345,9 +406,11 @@ function updateDrive(nowMs: number, dt: number): void {
   world.updateHazard(r.appearT === null ? (justAppeared ? 0 : -1) : t - r.appearT);
   // The faint ideal marker shows where an alert driver would stop if a hazard
   // appeared now. Once the hazard appears it stays where they would stop.
-  const markerP = r.appearT === null ? p + r.ideal.total : r.v * r.appearT + r.ideal.total;
-  world.setIdealMarker(markerP);
-  if (idealLabel) world.moveLabel(idealLabel, markerP);
+  if (r.mode === 'hazard') {
+    const markerP = r.appearT === null ? p + r.ideal.total : r.v * r.appearT + r.ideal.total;
+    world.setIdealMarker(markerP);
+    if (idealLabel) world.moveLabel(idealLabel, markerP);
+  }
   world.chaseCamera(p, speed, t);
   ui.hudSpeed.textContent = String(Math.round(msToMph(speed)));
 
@@ -379,6 +442,7 @@ function timeAtPosition(r: Run, pos: number): number {
 function halt(hit: boolean): void {
   phase = 'halted';
   ui.brakeHint.classList.add('hidden');
+  ui.predictHint.classList.add('hidden');
   if (hit) {
     ui.flash.classList.add('on');
     requestAnimationFrame(() => requestAnimationFrame(() => ui.flash.classList.remove('on')));
@@ -424,16 +488,21 @@ function startReplay(): void {
   const brakeP = r.brakeT === null ? null : Math.min(r.v * r.brakeT, r.hazardP);
   const stopP = motionAt(r, r.endT).p;
   const idealStop = appearP + r.ideal.total;
+  const predict = r.mode === 'predict';
+  const guessP = appearP + r.guess;
 
-  const frameEnd = Math.max(r.hazardP + 3, idealStop <= r.hazardP + 30 ? idealStop + 2 : 0);
+  const frameEnd = predict
+    ? Math.max(stopP, guessP) + 3
+    : Math.max(r.hazardP + 3, idealStop <= r.hazardP + 30 ? idealStop + 2 : 0);
   replayFrame = [appearP - 8, frameEnd + 4];
   world.sideCamera(replayFrame[0], replayFrame[1]);
-  world.setIdealMarker(idealStop);
+  world.setIdealMarker(predict ? null : idealStop);
 
   const think = world.paintSegment(appearP, appearP, 0xf2b632);
   const brake = brakeP === null ? null : world.paintSegment(brakeP, brakeP, 0xe0483e);
-  world.addLabel('Hazard appears', appearP, 3.4, 'hazard');
-  if (idealStop <= frameEnd + 4) world.addLabel(`Alert driver stops (${Math.round(r.ideal.total)} m)`, idealStop, 4.6, 'ideal', -4.6);
+  world.addLabel(predict ? 'Driver sees hazard' : 'Hazard appears', appearP, 3.4, 'hazard');
+  if (predict) world.addLabel(`Your guess (${fmtM(r.guess)})`, guessP, 4.6, 'guess', -4.6);
+  else if (idealStop <= frameEnd + 4) world.addLabel(`Alert driver stops (${Math.round(r.ideal.total)} m)`, idealStop, 4.6, 'ideal', -4.6);
 
   const t0 = Math.max(0, r.appearT - 1);
   const t1 = r.endT + 0.4;
@@ -520,6 +589,10 @@ function finishReplay(delay = 0): void {
 
 function showResults(): void {
   const r = run!;
+  if (r.mode === 'predict') {
+    showPredictResults(r);
+    return;
+  }
   const appearP = r.v * r.appearT!;
   const dHazard = r.hazardP - appearP;
   const reaction = r.reaction;
@@ -527,7 +600,7 @@ function showResults(): void {
   const idealGap = dHazard - r.ideal.total;
   const gap = r.hit || !actual ? 0 : dHazard - actual.total;
   const score = scoreHazardStop(reaction ?? 99, r.hit, gap, idealGap);
-  const isBest = saveBest(score.total);
+  const isBest = saveBest('hazard', score.total);
 
   const result: RunResult = {
     surface: r.surface,
@@ -545,6 +618,10 @@ function showResults(): void {
     isBest,
   };
   renderResults(result);
+  revealResults();
+}
+
+function revealResults(): void {
   ui.results.classList.remove('hidden');
   ui.results.scrollTop = 0;
 
@@ -554,11 +631,174 @@ function showResults(): void {
   const H = window.innerHeight;
   const onRight = rect.left > W * 0.3;
   world.setInset(onRight ? { right: W - rect.left + 8, bottom: 0 } : { right: 0, bottom: Math.min(H * 0.6, H - rect.top + 8) });
+  if (!onRight) world.setLabelClip(H - rect.top + 8);
   world.reframeSide();
   ($('again') as HTMLButtonElement).focus({ preventScroll: true });
 }
 
-function hazardName(k: HazardKind): string {
+// ---------------------------------------------------------------------------
+// Predict the stop: the player places a marker, then the stop plays out with
+// the Highway Code reaction time and no input from them.
+// ---------------------------------------------------------------------------
+
+/** Seconds of driving before the driver sees the hazard. */
+const PREDICT_RUN_UP_S = 2.5;
+/** Longest prediction allowed (m): more than the 777 m a car needs at 70 mph on ice. */
+const MAX_GUESS = 800;
+const START_GUESS = 40;
+const SLIDER_MAX = 1000;
+let dragging = false;
+let guessLabel: HTMLDivElement | null = null;
+
+// The slider is on a square-root scale, so short stops can be set finely and long icy ones still fit.
+const guessToSlider = (g: number) => Math.round(Math.sqrt(g / MAX_GUESS) * SLIDER_MAX);
+const sliderToGuess = (s: number) => MAX_GUESS * (s / SLIDER_MAX) ** 2;
+
+function startPredict(): void {
+  const v = mphToMs(settings.mph);
+  const grip = SURFACE_GRIP[settings.surface];
+  const ideal = stoppingDistance(v, HIGHWAY_CODE_REACTION_S, grip);
+  const lineP = v * PREDICT_RUN_UP_S;
+
+  world.setSurface(settings.surface);
+  world.buildScenery(Math.floor(Math.random() * 1e9), null);
+  world.clearHazard();
+  world.clearPaint();
+  world.clearLabels();
+  world.setIdealMarker(null);
+  world.setInset({ right: 0, bottom: 0 });
+  world.setSceneryRightVisible(true);
+
+  run = {
+    mode: 'predict',
+    surface: settings.surface,
+    mph: settings.mph,
+    v,
+    grip,
+    decel: grip * G,
+    ideal,
+    hazardKind: null,
+    hazardP: Infinity,
+    plannedAppearT: PREDICT_RUN_UP_S,
+    startMs: 0,
+    appearMs: null,
+    // The whole stop is fixed in advance: seen at the line, brakes on 0.67 s later.
+    appearT: PREDICT_RUN_UP_S,
+    brakeT: PREDICT_RUN_UP_S + HIGHWAY_CODE_REACTION_S,
+    reaction: HIGHWAY_CODE_REACTION_S,
+    endT: null,
+    hit: false,
+    impactSpeed: 0,
+    guess: START_GUESS,
+  };
+  idealLabel = null;
+
+  // Mark where the driver sees the hazard, and park the car there while the player predicts.
+  world.paintSegment(lineP - 0.35, lineP, 0xffffff, 0.95);
+  world.addLabel('Driver sees hazard', lineP, 2.2, 'hazard');
+  guessLabel = world.addLabel('', lineP + START_GUESS, 1.2, 'guess');
+  world.setCar(lineP, 0, false, 1);
+  setGuess(START_GUESS);
+
+  ui.placeBrief.innerHTML =
+    `A car doing <strong>${run.mph} mph</strong> on ${run.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[run.surface].toLowerCase()}</strong> road. ` +
+    `The driver sees a hazard at the white line, reacts in ${HIGHWAY_CODE_REACTION_S} s, then brakes as hard as they can.`;
+  ui.menu.classList.add('hidden');
+  ui.results.classList.add('hidden');
+  ui.message.classList.add('hidden');
+  ui.brakeHint.classList.add('hidden');
+  ui.predictHint.classList.add('hidden');
+  ui.place.classList.remove('hidden');
+  ui.hud.classList.remove('hidden');
+  ui.hudSurface.textContent = SURFACE_LABEL[run.surface];
+  ui.hudSpeed.textContent = String(run.mph);
+  phase = 'place';
+  framePlace();
+  ui.guessSlider.focus({ preventScroll: true });
+}
+
+/** Keep the road clear of the placing panel: frame the shot in the space above it. */
+function framePlace(): void {
+  if (!run) return;
+  const rect = ui.place.getBoundingClientRect();
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  // In landscape on a phone the panel sits on the right, so frame the road to its left.
+  const onRight = rect.left > W * 0.3;
+  world.placeCamera(run.v * PREDICT_RUN_UP_S, onRight ? rect.left - 8 : W, onRight ? H : rect.top - 8);
+}
+
+function setGuess(g: number, fromSlider = false): void {
+  if (!run) return;
+  const guess = Math.min(MAX_GUESS, Math.max(1, Math.round(g * 2) / 2));
+  run.guess = guess;
+  const p = run.v * PREDICT_RUN_UP_S + guess;
+  world.setGuessMarker(p);
+  if (guessLabel) {
+    guessLabel.textContent = `Your guess: ${fmtM(guess)}`;
+    world.moveLabel(guessLabel, p);
+  }
+  ui.guessReadout.textContent = fmtM(guess);
+  if (!fromSlider) ui.guessSlider.value = String(guessToSlider(guess));
+  ui.guessSlider.setAttribute('aria-valuetext', `${fmtM(guess)}`);
+}
+
+function guessFromPointer(e: PointerEvent): void {
+  if (!run) return;
+  const p = world.roadPositionAt(e.clientX, e.clientY);
+  // Above the horizon counts as as far as the marker can go.
+  setGuess(p === null ? MAX_GUESS : p - run.v * PREDICT_RUN_UP_S);
+}
+
+function nudgeGuess(metres: number): void {
+  if (run) setGuess(run.guess + metres);
+}
+
+function onPlaceKey(e: KeyboardEvent): void {
+  const step = e.shiftKey ? 10 : 1;
+  if (e.key === 'Enter' && document.activeElement?.tagName !== 'BUTTON') {
+    e.preventDefault();
+    lockIn();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    showMenu();
+  } else if (document.activeElement !== ui.guessSlider && (e.key === 'ArrowUp' || e.key === 'ArrowRight')) {
+    e.preventDefault();
+    nudgeGuess(step);
+  } else if (document.activeElement !== ui.guessSlider && (e.key === 'ArrowDown' || e.key === 'ArrowLeft')) {
+    e.preventDefault();
+    nudgeGuess(-step);
+  }
+}
+
+ui.guessSlider.max = String(SLIDER_MAX);
+ui.guessSlider.addEventListener('input', () => setGuess(sliderToGuess(Number(ui.guessSlider.value)), true));
+$('guess-less').addEventListener('click', () => nudgeGuess(-1));
+$('guess-more').addEventListener('click', () => nudgeGuess(1));
+$('place-back').addEventListener('click', showMenu);
+$('place-go').addEventListener('click', () => lockIn());
+
+function lockIn(): void {
+  if (phase !== 'place' || !run) return;
+  dragging = false;
+  ui.place.classList.add('hidden');
+  ui.predictHint.classList.remove('hidden');
+  world.resize(); // undo the placing camera's framing
+  world.setInset({ right: 0, bottom: 0 });
+  (document.activeElement as HTMLElement | null)?.blur();
+  run.startMs = performance.now();
+  phase = 'drive';
+}
+
+function showPredictResults(r: Run): void {
+  const actual = r.ideal;
+  const score = scorePrediction(r.guess, actual.total);
+  const isBest = saveBest('predict', score.total);
+  renderPredictResults({ surface: r.surface, mph: r.mph, grip: r.grip, guess: r.guess, actual, score, isBest });
+  revealResults();
+}
+
+function hazardName(k: HazardKind | null): string {
   return k === 'child' ? 'child' : k === 'deer' ? 'deer' : 'car pulling out';
 }
 
@@ -598,4 +838,7 @@ requestAnimationFrame(frame);
   phase,
   hazardVisible: run?.appearMs != null,
   hazardKind: run?.hazardKind,
+  mode: run?.mode,
+  guess: run?.guess,
+  stoppingDistance: run?.ideal.total,
 });

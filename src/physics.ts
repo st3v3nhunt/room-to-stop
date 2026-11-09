@@ -132,6 +132,34 @@ export function scoreHazardStop(reactionS: number, hit: boolean, gap: number, id
   return { reactionPoints, gapPoints, total, stars };
 }
 
+export interface PredictionScore {
+  /** Guess minus actual stopping distance (m): negative means the guess was short. */
+  errorM: number;
+  total: number;
+  stars: 0 | 1 | 2 | 3;
+}
+
+/** Guesses within this share of the real stopping distance score full marks. */
+const PREDICT_FULL_FRAC = 0.05;
+/** Guesses this far out (as a share of the real distance) or more score zero. */
+const PREDICT_ZERO_FRAC = 0.6;
+/** Metres of slack, so short stops at low speed are not scored too harshly. */
+const PREDICT_SLACK_M = 1;
+
+/**
+ * Predict the stop score: how close the player's marker was to where the
+ * vehicle really stopped, as a share of the real stopping distance. Within
+ * 5% (or 1 m) scores the full 1,000, falling to zero at 60% out.
+ */
+export function scorePrediction(guess: number, actual: number): PredictionScore {
+  const errorM = guess - actual;
+  const off = Math.max(0, Math.abs(errorM) - PREDICT_SLACK_M) / actual;
+  const frac = clamp01(1 - (off - PREDICT_FULL_FRAC) / (PREDICT_ZERO_FRAC - PREDICT_FULL_FRAC));
+  const total = Math.round(MAX_POINTS * frac);
+  const stars = total >= 800 ? 3 : total >= 550 ? 2 : total > 0 ? 1 : 0;
+  return { errorM, total, stars };
+}
+
 function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));
 }

@@ -9,6 +9,7 @@
   --brake: #e0483e;
   --ideal: #6fd3a8;
   --hazard: #ffffff;
+  --guess: #4da3ff;
   --radius: 14px;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   color: var(--text);
@@ -184,6 +185,71 @@ button.primary:hover {
   font-size: 13px;
 }
 
+/* ---------- Predict the stop: placing the marker ---------- */
+
+#place {
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  padding: 14px 16px;
+}
+
+.place-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+#guess-readout {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--guess);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.place-brief {
+  margin: 4px 0 10px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.place-brief strong {
+  color: var(--text);
+}
+
+.guess-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  gap: 8px;
+  align-items: center;
+}
+
+.guess-row button {
+  padding: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+#guess-slider {
+  width: 100%;
+  height: 44px;
+  accent-color: var(--guess);
+  touch-action: pan-x;
+}
+
+.place-tip {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.place-actions {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 8px;
+}
+
 /* ---------- HUD ---------- */
 
 #hud {
@@ -203,7 +269,7 @@ button.primary:hover {
   font-variant-numeric: tabular-nums;
 }
 
-#brake-hint {
+.hint {
   position: absolute;
   bottom: calc(20px + env(safe-area-inset-bottom));
   left: 50%;
@@ -318,6 +384,10 @@ kbd {
 
 .label3d.ideal {
   border-color: var(--ideal);
+}
+
+.label3d.guess {
+  border-color: var(--guess);
 }
 
 .label3d.hazard {
@@ -485,6 +555,25 @@ kbd {
   background: var(--brake);
 }
 
+.sw-guess {
+  background: var(--guess);
+}
+
+.bar.guess {
+  background: var(--guess);
+  border-radius: 6px;
+}
+
+.guess-line {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 3px;
+  margin-left: -1px;
+  background: var(--guess);
+  border-radius: 2px;
+}
+
 .sw-hazard {
   background: var(--hazard);
   width: 3px;
@@ -545,6 +634,16 @@ kbd {
   }
   #menu {
     max-height: calc(100% - 16px);
+  }
+  #place {
+    left: auto;
+    right: calc(8px + env(safe-area-inset-right));
+    transform: none;
+    bottom: 8px;
+    width: min(380px, 50%);
+  }
+  .place-brief {
+    display: none;
   }
   .lede {
     margin-bottom: 10px;
