@@ -5,6 +5,7 @@ import {
   brakingDistance,
   mphToMs,
   scoreHazardStop,
+  scorePrediction,
   speedAtDistance,
   step,
   stoppingDistance,
@@ -81,5 +82,34 @@ describe('scoreHazardStop', () => {
   });
   it('scores zero for reaction at 1.5 s or slower', () => {
     expect(scoreHazardStop(2, false, 5, 10).reactionPoints).toBe(0);
+  });
+});
+
+describe('scorePrediction', () => {
+  it('gives full marks within 5%', () => {
+    expect(scorePrediction(100, 100).total).toBe(1000);
+    expect(scorePrediction(105, 100).total).toBe(1000);
+    expect(scorePrediction(94.5, 100).total).toBe(1000);
+  });
+  it('allows a metre of slack on short stops', () => {
+    expect(scorePrediction(13.5, 12).total).toBe(1000);
+  });
+  it('falls with distance and treats short and long guesses alike', () => {
+    const short = scorePrediction(70, 100);
+    const long = scorePrediction(130, 100);
+    expect(short.total).toBe(long.total);
+    expect(short.total).toBeGreaterThan(400);
+    expect(short.total).toBeLessThan(600);
+    expect(short.errorM).toBeCloseTo(-30);
+  });
+  it('scores zero and no stars when far out', () => {
+    const s = scorePrediction(20, 100);
+    expect(s.total).toBe(0);
+    expect(s.stars).toBe(0);
+  });
+  it('awards stars by points', () => {
+    expect(scorePrediction(110, 100).stars).toBe(3);
+    expect(scorePrediction(125, 100).stars).toBe(2);
+    expect(scorePrediction(150, 100).stars).toBe(1);
   });
 });

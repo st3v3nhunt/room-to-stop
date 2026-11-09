@@ -19,16 +19,22 @@
         <div class="hud-chip"><span id="hud-speed">30</span> mph</div>
         <div class="hud-chip" id="hud-surface">Dry</div>
       </div>
-      <div id="brake-hint" class="hidden">
+      <div id="brake-hint" class="hint hidden">
         <span class="desktop-only">Press <kbd>Space</kbd> or click to brake</span>
         <span class="touch-only">Tap anywhere to brake</span>
       </div>
+      <div id="predict-hint" class="hint hidden">Watch: the driver reacts in 0.67 s, then brakes hard</div>
       <div id="message" class="hidden" role="status" aria-live="polite"></div>
 
       <!-- Menu -->
       <section id="menu" class="panel">
         <h1>Room to Stop</h1>
-        <p class="lede">A hazard will appear on the road ahead. Brake as fast as you can, then see how far you really travelled.</p>
+        <p class="lede" id="lede">A hazard will appear on the road ahead. Brake as fast as you can, then see how far you really travelled.</p>
+
+        <fieldset>
+          <legend>Game</legend>
+          <div class="choice-row" id="mode-choices"></div>
+        </fieldset>
 
         <fieldset>
           <legend>Road surface</legend>
@@ -55,7 +61,7 @@
         <p class="takeaway" id="takeaway"></p>
 
         <div class="stats">
-          <div class="stat"><span class="stat-label">Your reaction</span><span class="stat-value" id="stat-reaction">–</span></div>
+          <div class="stat"><span class="stat-label" id="stat-reaction-label">Your reaction</span><span class="stat-value" id="stat-reaction">–</span></div>
           <div class="stat"><span class="stat-label" id="stat-gap-label">Gap to hazard</span><span class="stat-value" id="stat-gap">–</span></div>
           <div class="stat"><span class="stat-label">Score</span><span class="stat-value" id="stat-score">–</span></div>
         </div>
@@ -64,7 +70,8 @@
         <div class="legend">
           <span><i class="sw sw-think"></i>Thinking distance</span>
           <span><i class="sw sw-brake"></i>Braking distance</span>
-          <span><i class="sw sw-hazard"></i>Hazard</span>
+          <span id="legend-hazard"><i class="sw sw-hazard"></i>Hazard</span>
+          <span id="legend-guess" class="hidden"><i class="sw sw-guess"></i>Your guess</span>
         </div>
 
         <p class="whatif" id="whatif"></p>
@@ -74,7 +81,29 @@
           <button id="replay">Watch replay</button>
           <button id="change">Change road or speed</button>
         </div>
-        <p class="footnote">Alert driver uses the Highway Code reaction time of 0.67 s. Braking assumes a car in good condition.</p>
+        <p class="footnote" id="footnote">Alert driver uses the Highway Code reaction time of 0.67 s. Braking assumes a car in good condition.</p>
+      </section>
+
+      <!-- Predict the stop: place a marker -->
+      <section id="place" class="panel hidden" aria-labelledby="place-title">
+        <div class="place-head">
+          <h2 id="place-title">Where will it stop?</h2>
+          <output id="guess-readout" for="guess-slider" aria-live="polite">40 m</output>
+        </div>
+        <p class="place-brief" id="place-brief"></p>
+        <div class="guess-row">
+          <button id="guess-less" type="button" aria-label="1 metre shorter">−</button>
+          <input id="guess-slider" type="range" min="0" max="1000" step="1" aria-label="Predicted stopping distance" />
+          <button id="guess-more" type="button" aria-label="1 metre longer">+</button>
+        </div>
+        <p class="place-tip">
+          <span class="desktop-only">Click or drag on the road, or use the slider or arrow keys.</span>
+          <span class="touch-only">Drag on the road or use the slider.</span>
+        </p>
+        <div class="place-actions">
+          <button id="place-back" type="button">Back</button>
+          <button id="place-go" class="primary" type="button">Lock it in</button>
+        </div>
       </section>
 
       <button id="skip-replay" class="hidden">Skip replay</button>

@@ -101,9 +101,14 @@ export class World {
   private hazard: HazardModel | null = null;
   private hazardBaseZ = 0;
   private idealMarker: THREE.Mesh;
+  private guessMarker: THREE.Group;
+  private raycaster = new THREE.Raycaster();
+  private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private labels: Label[] = [];
   private labelRoot: HTMLElement;
   private inset: ViewInset = { right: 0, bottom: 0 };
+  /** Labels lower than this many pixels from the bottom are hidden (under a panel). */
+  private labelClipBottom = 0;
   private surface: Surface = 'dry';
   private sideRange: [number, number] | null = null;
 
@@ -147,6 +152,25 @@ export class World {
     this.idealMarker.position.set(LANE_X, 0.03, 0);
     this.idealMarker.renderOrder = 2;
     this.scene.add(this.idealMarker);
+
+    // The player's prediction in Predict the stop: a bold blue bar across the lane.
+    // The player's prediction in Predict the stop: a blue bar across the lane
+    // with a tall post and flag, so it can be seen a long way down the road.
+    this.guessMarker = new THREE.Group();
+    const guessBlue = new THREE.MeshBasicMaterial({ color: 0x4da3ff, transparent: true, opacity: 0.9, depthWrite: false });
+    const bar = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.9), guessBlue);
+    bar.rotation.x = -Math.PI / 2;
+    bar.position.y = 0.04;
+    bar.renderOrder = 4;
+    const postMat = new THREE.MeshBasicMaterial({ color: 0x4da3ff });
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 3.2, 6), postMat);
+    post.position.set(1.95, 1.6, 0);
+    const flag = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.7, 1.1), postMat);
+    flag.position.set(1.95, 2.85, 0.55);
+    this.guessMarker.add(bar, post, flag);
+    this.guessMarker.position.set(LANE_X, 0, 0);
+    this.guessMarker.visible = false;
+    this.scene.add(this.guessMarker);
 
     this.setSurface('dry');
     this.buildScenery(1, null);
@@ -439,6 +463,11 @@ export class World {
     if (p !== null) this.idealMarker.position.z = -p;
   }
 
+  setGuessMarker(p: number | null): void {
+    this.guessMarker.visible = p !== null;
+    if (p !== null) this.guessMarker.position.z = -p;
+  }
+
   /** Paint a coloured strip on our lane between road positions a and b. */
   paintSegment(a: number, b: number, color: number, opacity = 0.85): THREE.Mesh {
     const len = Math.max(0.01, b - a);
@@ -506,7 +535,7 @@ export class World {
         y = hit.y0 - 3;
       }
       // Hide labels that would sit under the results panel.
-      if (y > h - this.inset.bottom || x + lw / 2 > w - this.inset.right) {
+      if (y > h - Math.max(this.inset.bottom, this.labelClipBottom) || x + lw / 2 > w - this.inset.right) {
         l.el.style.display = 'none';
         continue;
       }
@@ -520,16 +549,55 @@ export class World {
   // -------------------------------------------------------------------------
 
   chaseCamera(p: number, speed: number, time: number): void {
-    if (this.sideRange) {
-      this.sideRange = null;
-      const fog = this.scene.fog as THREE.Fog;
-      fog.near = LOOKS[this.surface].fogNear;
-      fog.far = LOOKS[this.surface].fogFar;
-    }
+    this.sideRange = null;
+    this.resetFog();
     const carZ = -(p - CAR_LENGTH / 2);
     const shake = Math.min(speed / 31, 1) * 0.02;
     this.camera.position.set(LANE_X + 0.2, 2.3 + Math.sin(time * 23) * shake, carZ + 7.2);
     this.camera.lookAt(LANE_X * 0.6, 1.1, carZ - 30);
+  }
+
+  private resetFog(): void {
+    const fog = this.scene.fog as THREE.Fog;
+    fog.near = LOOKS[this.surface].fogNear;
+    fog.far = LOOKS[this.surface].fogFar;
+  }
+
+  /**
+   * High behind a stationary car whose front bumper is at road position p,
+   * looking a long way down the road so the player can place a marker.
+   */
+  placeCamera(p: number, visibleW: number, visibleH: number): void {
+    this.sideRange = null;
+    // Frame the shot in the top-left visibleW x visibleH pixels, clear of the panel, without stretching it.
+    const el = this.renderer.domElement;
+    const W = el.clientWidth;
+    const H = el.clientHeight;
+    const visW = Math.max(160, Math.min(W, visibleW));
+    const visH = Math.max(160, Math.min(H, visibleH));
+    this.camera.aspect = visW / visH;
+    this.camera.fov = visW / visH < 1 ? 66 : 50;
+    this.camera.setViewOffset(visW, visH, 0, 0, W, H);
+    this.camera.updateProjectionMatrix();
+    const carZ = -(p - CAR_LENGTH / 2);
+    // High up, so distant stopping points are spread out rather than squashed at the horizon.
+    this.camera.position.set(LANE_X + 1.6, 14, carZ + 28);
+    this.camera.lookAt(LANE_X * 0.5, 0, carZ - 62);
+    // Push the fog back so long icy stops can still be marked.
+    const fog = this.scene.fog as THREE.Fog;
+    fog.near = 260;
+    fog.far = 1800;
+  }
+
+  /** Road position (m) under a point on the screen, or null if it is above the horizon. */
+  roadPositionAt(clientX: number, clientY: number): number | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    this.camera.updateMatrixWorld();
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hit = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(this.groundPlane, hit)) return null;
+    return -hit.z;
   }
 
   /** Side-on view from the right-hand verge framing road positions a..b. */
@@ -570,6 +638,7 @@ export class World {
 
   setInset(inset: ViewInset): void {
     this.inset = inset;
+    this.labelClipBottom = inset.bottom;
     this.applyViewOffset();
   }
 
@@ -583,6 +652,11 @@ export class World {
     } else {
       this.camera.clearViewOffset();
     }
+  }
+
+  /** Hide labels in the bottom `px` pixels, e.g. behind a tall panel the camera inset does not cover. */
+  setLabelClip(px: number): void {
+    this.labelClipBottom = px;
   }
 
   resize(): void {
