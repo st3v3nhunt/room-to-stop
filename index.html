@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#0f1720" />
+    <meta name="description" content="Room to Stop: a free browser game about how speed, road surface and reaction time change how far a car travels before it stops." />
+    <title>Room to Stop</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23e8a33d'/%3E%3Crect x='12' y='28' width='40' height='8' rx='2' fill='%230f1720'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene" aria-label="Road view"></canvas>
+      <div id="labels" aria-hidden="true"></div>
+      <div id="flash" aria-hidden="true"></div>
+
+      <!-- In-run HUD -->
+      <div id="hud" class="hidden">
+        <div class="hud-chip"><span id="hud-speed">30</span> mph</div>
+        <div class="hud-chip" id="hud-surface">Dry</div>
+      </div>
+      <div id="brake-hint" class="hidden">
+        <span class="desktop-only">Press <kbd>Space</kbd> or click to brake</span>
+        <span class="touch-only">Tap anywhere to brake</span>
+      </div>
+      <div id="message" class="hidden" role="status" aria-live="polite"></div>
+
+      <!-- Menu -->
+      <section id="menu" class="panel">
+        <h1>Room to Stop</h1>
+        <p class="lede">A hazard will appear on the road ahead. Brake as fast as you can, then see how far you really travelled.</p>
+
+        <fieldset>
+          <legend>Road surface</legend>
+          <div class="choice-row" id="surface-choices"></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Speed</legend>
+          <div class="choice-row" id="speed-choices"></div>
+        </fieldset>
+
+        <p class="baseline" id="baseline"></p>
+
+        <button id="start" class="primary">Drive</button>
+        <p class="best" id="best"></p>
+      </section>
+
+      <!-- Results -->
+      <section id="results" class="panel hidden" aria-live="polite">
+        <div class="results-head">
+          <h2 id="result-title">Stopped</h2>
+          <div class="stars" id="stars" aria-label="Stars"></div>
+        </div>
+        <p class="takeaway" id="takeaway"></p>
+
+        <div class="stats">
+          <div class="stat"><span class="stat-label">Your reaction</span><span class="stat-value" id="stat-reaction">–</span></div>
+          <div class="stat"><span class="stat-label" id="stat-gap-label">Gap to hazard</span><span class="stat-value" id="stat-gap">–</span></div>
+          <div class="stat"><span class="stat-label">Score</span><span class="stat-value" id="stat-score">–</span></div>
+        </div>
+
+        <div class="bars" id="bars"></div>
+        <div class="legend">
+          <span><i class="sw sw-think"></i>Thinking distance</span>
+          <span><i class="sw sw-brake"></i>Braking distance</span>
+          <span><i class="sw sw-hazard"></i>Hazard</span>
+        </div>
+
+        <p class="whatif" id="whatif"></p>
+
+        <div class="actions">
+          <button id="again" class="primary">Try again</button>
+          <button id="replay">Watch replay</button>
+          <button id="change">Change road or speed</button>
+        </div>
+        <p class="footnote">Alert driver uses the Highway Code reaction time of 0.67 s. Braking assumes a car in good condition.</p>
+      </section>
+
+      <button id="skip-replay" class="hidden">Skip replay</button>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
