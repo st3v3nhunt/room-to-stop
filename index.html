@@ -18,6 +18,23 @@
       <div id="hud" class="hidden">
         <div class="hud-chip"><span id="hud-speed">30</span> mph</div>
         <div class="hud-chip" id="hud-surface">Dry</div>
+        <div class="hud-chip hidden" id="hud-ff"></div>
+      </div>
+      <!-- Hazard run and Stop on the line: lives, streak and score -->
+      <div id="jhud" class="hidden">
+        <div class="hud-chip" id="jhud-lives" aria-label="Lives"></div>
+        <div class="hud-chip" id="jhud-mult"></div>
+        <div class="hud-chip" id="jhud-score">0</div>
+      </div>
+      <div id="banner" class="hidden" aria-live="polite">
+        <div class="banner-title" id="banner-title"></div>
+        <div class="banner-sub" id="banner-sub"></div>
+      </div>
+      <div id="stopcard" class="hidden" role="status" aria-live="polite">
+        <div class="sc-word" id="sc-word"></div>
+        <div class="sc-big" id="sc-big"></div>
+        <div class="sc-sub" id="sc-sub"></div>
+        <div class="sc-points" id="sc-points"></div>
       </div>
       <div id="brake-hint" class="hint hidden">
         <span class="desktop-only">Press <kbd>Space</kbd> or click to brake</span>
@@ -29,12 +46,13 @@
       <!-- Menu -->
       <section id="menu" class="panel">
         <h1>Room to Stop</h1>
-        <p class="lede" id="lede">A hazard will appear on the road ahead. Brake as fast as you can, then see how far you really travelled.</p>
+        <p class="tagline">How much room do you really need?</p>
 
         <fieldset>
           <legend>Game</legend>
-          <div class="choice-row" id="mode-choices"></div>
+          <div class="mode-list" id="mode-choices"></div>
         </fieldset>
+        <p class="lede" id="lede"></p>
 
         <fieldset id="vehicle-field">
           <legend>Vehicle</legend>
@@ -54,7 +72,23 @@
         <p class="baseline" id="baseline"></p>
 
         <button id="start" class="primary">Drive</button>
-        <p class="best" id="best"></p>
+      </section>
+
+      <!-- End of a Hazard run or Stop on the line -->
+      <section id="summary" class="panel hidden" aria-live="polite">
+        <div class="results-head">
+          <h2 id="sum-title">Run over</h2>
+          <div class="sum-score" id="sum-score"></div>
+        </div>
+        <p class="takeaway" id="sum-takeaway"></p>
+        <div class="stats" id="sum-stats"></div>
+        <div class="sum-rows" id="sum-rows"></div>
+        <div class="actions">
+          <button id="sum-again" class="primary">Play again</button>
+          <button id="sum-replay">Watch last stop</button>
+          <button id="sum-menu">Menu</button>
+        </div>
+        <p class="footnote" id="sum-footnote"></p>
       </section>
 
       <!-- Results -->

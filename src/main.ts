@@ -10,6 +10,9 @@ import {
   mphToMs,
   msToMph,
   scoreHazardStop,
+  scoreLineStop,
+  scoreRunStop,
+  RUN_REACTION_BEST_S,
   scorePrediction,
   scoreWhatChanged,
   speedAtDistance,
@@ -23,6 +26,8 @@ import type { HazardKind } from './models';
 import { LANE_X, World, setSegment } from './world';
 import { Sound, type SoundScene } from './sound';
 import { renderChangedResults, renderPredictResults, renderResults, type RunResult } from './results';
+import { LINE_ROUNDS, MAX_HAZARD_DISTANCE, RUN_LIVES, fastForward, lineRound, multiplier, pickLeg, reactionRating } from './journey';
+import { type StopRecord, renderSummary } from './summary';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -41,7 +46,14 @@ const ui = {
   flash: $('flash'),
   skip: $<HTMLButtonElement>('skip-replay'),
   baseline: $('baseline'),
-  best: $('best'),
+  summary: $('summary'),
+  jhud: $('jhud'),
+  jhudLives: $('jhud-lives'),
+  jhudMult: $('jhud-mult'),
+  jhudScore: $('jhud-score'),
+  hudFf: $('hud-ff'),
+  banner: $('banner'),
+  stopcard: $('stopcard'),
   lede: $('lede'),
   start: $<HTMLButtonElement>('start'),
   place: $('place'),
@@ -59,14 +71,29 @@ const ui = {
 // Settings and menu
 // ---------------------------------------------------------------------------
 
-type Mode = 'hazard' | 'predict' | 'changed';
-const MODES: Mode[] = ['hazard', 'predict', 'changed'];
-const MODE_LABEL: Record<Mode, string> = { hazard: 'Hazard stop', predict: 'Predict the stop', changed: 'What changed?' };
+type Mode = 'run' | 'line' | 'hazard' | 'predict' | 'changed';
+const MODES: Mode[] = ['run', 'line', 'hazard', 'predict', 'changed'];
+const MODE_LABEL: Record<Mode, string> = {
+  run: 'Hazard run',
+  line: 'Stop on the line',
+  hazard: 'Single stop',
+  predict: 'Predict the stop',
+  changed: 'What changed?',
+};
 const MODE_LEDE: Record<Mode, string> = {
-  hazard: 'A hazard will appear on the road ahead. Brake as fast as you can, then see how far you really travelled.',
+  run: 'Hazard after hazard, on faster and wetter roads. Brake the moment each one appears. Clean stops build your multiplier, and three mistakes end the run.',
+  line: 'A red light ahead. Brake at just the right moment to stop as close to the line as you can without crossing it. Five rounds, from town speeds to ice.',
+  hazard: 'One hazard, with the vehicle, road and speed you choose, then a replay of how far you travelled while thinking and braking.',
   predict: 'A driver sees a hazard and brakes. Put a marker on the road where you think the car will stop, then watch it play out.',
   changed:
     'Watch a car stop, then something changes. Predict where it stops now, and how fast it is still going as it passes the old stopping point.',
+};
+const MODE_START: Record<Mode, string> = {
+  run: 'Start the run',
+  line: 'Start',
+  hazard: 'Drive',
+  predict: 'Place your marker',
+  changed: 'Watch the first stop',
 };
 
 const SURFACES: Surface[] = ['dry', 'wet', 'icy'];
@@ -74,7 +101,7 @@ const aVehicle = (v: Vehicle) => `a ${v}`;
 const capital = (t: string) => t[0].toUpperCase() + t.slice(1);
 
 const VEHICLE_KINDS: Vehicle[] = ['car', 'motorbike', 'lorry'];
-const settings = { surface: 'dry' as Surface, mph: 30, mode: 'hazard' as Mode, vehicle: 'car' as Vehicle };
+const settings = { surface: 'dry' as Surface, mph: 30, mode: 'run' as Mode, vehicle: 'car' as Vehicle };
 
 function choiceButtons<T extends string | number>(
   root: HTMLElement,
@@ -99,7 +126,18 @@ function choiceButtons<T extends string | number>(
   }
 }
 
-choiceButtons($('mode-choices'), MODES, (m) => MODE_LABEL[m], () => settings.mode, (m) => (settings.mode = m));
+for (const m of MODES) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = m === 'run' ? 'mode-card featured' : 'mode-card';
+  b.dataset.mode = m;
+  b.innerHTML = `<span class="mode-name">${MODE_LABEL[m]}</span><span class="mode-best"></span>`;
+  b.addEventListener('click', () => {
+    settings.mode = m;
+    updateBaseline();
+  });
+  $('mode-choices').appendChild(b);
+}
 choiceButtons($('vehicle-choices'), VEHICLE_KINDS, (v) => VEHICLE_LABEL[v], () => settings.vehicle, (v) => {
   settings.vehicle = v;
   world.setVehicle(v);
@@ -112,19 +150,20 @@ choiceButtons($('surface-choices'), SURFACES, (s) => SURFACE_LABEL[s], () => set
 choiceButtons($('speed-choices'), SPEEDS_MPH, (m) => `${m}`, () => settings.mph, (m) => (settings.mph = m));
 
 function updateBaseline(): void {
-  const predict = settings.mode === 'predict';
-  const changed = settings.mode === 'changed';
-  ui.lede.textContent = MODE_LEDE[settings.mode];
-  ui.start.textContent = predict ? 'Place your marker' : changed ? 'Watch the first stop' : 'Drive';
+  const mode = settings.mode;
+  const changed = mode === 'changed';
+  // Only these two let the player choose the road and speed; the others set their own.
+  const pick = mode === 'hazard' || mode === 'predict';
+  ui.lede.textContent = MODE_LEDE[mode];
+  ui.start.textContent = MODE_START[mode];
   showBest();
-  // What changed? picks its own speeds and roads for each level.
-  $('surface-field').classList.toggle('hidden', changed);
-  $('speed-field').classList.toggle('hidden', changed);
+  $('surface-field').classList.toggle('hidden', !pick);
+  $('speed-field').classList.toggle('hidden', !pick);
   $('vehicle-field').classList.toggle('hidden', changed);
   world.setVehicle(changed ? 'car' : settings.vehicle);
   // In Predict the stop the baseline would give the answer away.
-  ui.baseline.classList.toggle('hidden', predict || changed);
-  if (predict || changed) return;
+  ui.baseline.classList.toggle('hidden', mode !== 'hazard');
+  if (mode !== 'hazard') return;
   const d = vehicleStop(mphToMs(settings.mph), HIGHWAY_CODE_REACTION_S, settings.vehicle, settings.surface);
   ui.baseline.innerHTML =
     `An alert driver ${settings.vehicle === 'motorbike' ? 'on' : 'in'} ${aVehicle(settings.vehicle)} at <strong>${settings.mph} mph</strong> on ${settings.surface === 'icy' ? 'an' : 'a'} <strong>${SURFACE_LABEL[settings.surface].toLowerCase()}</strong> road ` +
@@ -151,8 +190,14 @@ function saveBest(mode: Mode, score: number): boolean {
   return true;
 }
 function showBest(): void {
-  const b = loadBest();
-  ui.best.textContent = b > 0 ? `Your best ${MODE_LABEL[settings.mode]} score: ${b} / 1,000` : '';
+  $('mode-choices')
+    .querySelectorAll<HTMLButtonElement>('button')
+    .forEach((b) => {
+      const mode = b.dataset.mode as Mode;
+      const best = loadBest(mode);
+      b.setAttribute('aria-pressed', String(mode === settings.mode));
+      b.querySelector('.mode-best')!.textContent = best > 0 ? `Best ${best.toLocaleString('en-GB')}` : mode === 'run' ? 'New' : '';
+    });
 }
 updateBaseline();
 
@@ -164,7 +209,12 @@ type Phase = 'menu' | 'place' | 'drive' | 'halted' | 'replay' | 'results' | 'mes
 let phase: Phase = 'menu';
 
 interface Run {
+  /** A Hazard run is made of 'run' stops; a Single stop is one 'hazard' stop. */
   mode: Mode;
+  /** Stop on the line: road position (m) of the line. */
+  lineP: number;
+  /** How many times faster than real time the braking plays (long slides in the games of several stops). */
+  ff: number;
   vehicle: Vehicle;
   /** Seconds after the brake is pressed before the brakes bite. */
   lag: number;
@@ -218,10 +268,11 @@ function pickHazard(dist: number): HazardKind {
   return options[Math.floor(Math.random() * options.length)];
 }
 
-/** Furthest a hazard is placed, so it is still visible on a phone screen. */
-const MAX_HAZARD_DISTANCE = 230;
+const isHazardMode = (m: Mode) => m === 'hazard' || m === 'run';
 
 function startRun(): void {
+  window.clearTimeout(journeyTimer);
+  journey = null;
   if (settings.mode === 'predict') {
     startPredict();
     return;
@@ -230,19 +281,46 @@ function startRun(): void {
     startChanged();
     return;
   }
+  if (settings.mode === 'run' || settings.mode === 'line') {
+    startJourney(settings.mode);
+    return;
+  }
+  startHazard({
+    mode: 'hazard',
+    vehicle: settings.vehicle,
+    surface: settings.surface,
+    mph: settings.mph,
+    margin: 0.12 + Math.random() * 0.25,
+    appearT: 3 + Math.random() * 3.5,
+  });
+}
+
+interface HazardSpec {
+  mode: 'hazard' | 'run';
+  vehicle: Vehicle;
+  surface: Surface;
+  mph: number;
+  /** Room an alert driver has to spare, as a share of their stopping distance. */
+  margin: number;
+  /** Seconds of driving before the hazard appears. */
+  appearT: number;
+}
+
+function startHazard(spec: HazardSpec): void {
   changed = null;
-  const v = mphToMs(settings.mph);
-  const grip = vehicleGrip(settings.vehicle, settings.surface);
-  const ideal = vehicleStop(v, HIGHWAY_CODE_REACTION_S, settings.vehicle, settings.surface);
-  const plannedAppearT = 3 + Math.random() * 3.5;
+  const v = mphToMs(spec.mph);
+  const grip = vehicleGrip(spec.vehicle, spec.surface);
+  const ideal = vehicleStop(v, HIGHWAY_CODE_REACTION_S, spec.vehicle, spec.surface);
+  const plannedAppearT = spec.appearT;
   // A fair distance: an alert driver stops with a little room to spare.
-  const fair = ideal.total * (1.12 + Math.random() * 0.25) + 2;
+  const fair = ideal.total * (1 + spec.margin) + 2;
   const dist = Math.min(fair, MAX_HAZARD_DISTANCE);
   const hazardP = v * plannedAppearT + dist;
   const hazardKind = pickHazard(dist);
 
-  world.setSurface(settings.surface);
-  world.setVehicle(settings.vehicle);
+  world.setSurface(spec.surface);
+  world.setVehicle(spec.vehicle);
+  world.setStopLine(null);
   world.buildScenery(Math.floor(Math.random() * 1e9), hazardKind === 'car' ? hazardP : null);
   world.placeHazard(hazardKind, hazardP);
   world.clearPaint();
@@ -252,11 +330,13 @@ function startRun(): void {
   world.setSceneryRightVisible(true);
 
   run = {
-    mode: 'hazard',
-    vehicle: settings.vehicle,
-    lag: VEHICLES[settings.vehicle].brakeLagS,
-    surface: settings.surface,
-    mph: settings.mph,
+    mode: spec.mode,
+    lineP: Infinity,
+    ff: 1,
+    vehicle: spec.vehicle,
+    lag: VEHICLES[spec.vehicle].brakeLagS,
+    surface: spec.surface,
+    mph: spec.mph,
     v,
     grip,
     decel: grip * G,
@@ -275,20 +355,256 @@ function startRun(): void {
     guess: 0,
   };
 
-  idealLabel = world.addLabel(`Alert driver stops: ${Math.round(ideal.total)} m`, ideal.total, 0.2, 'ideal');
-  window.setTimeout(() => idealLabel?.style.setProperty('opacity', '0'), 3000);
+  // The green strip is explained once; after that it is just there.
+  idealLabel = null;
+  if (!journey || journey.index === 0) {
+    const label = world.addLabel(`Alert driver stops: ${Math.round(ideal.total)} m`, ideal.total, 0.2, 'ideal');
+    idealLabel = label;
+    window.setTimeout(() => label.style.setProperty('opacity', '0'), 3000);
+  }
+  showDriveUi(run);
+}
 
-  ui.menu.classList.add('hidden');
-  ui.results.classList.add('hidden');
-  ui.message.classList.add('hidden');
-  ui.place.classList.add('hidden');
-  ui.predictHint.classList.add('hidden');
+/** Show the driving HUD for a run the player brakes in, and start the clock. */
+function showDriveUi(r: Run): void {
+  hidePanels();
   ui.hud.classList.remove('hidden');
+  ui.hudFf.classList.add('hidden');
   ui.brakeHint.classList.remove('hidden');
-  ui.hudSurface.textContent = SURFACE_LABEL[run.surface];
-  ui.hudSpeed.textContent = String(run.mph);
+  ui.hudSurface.textContent = SURFACE_LABEL[r.surface];
+  ui.hudSpeed.textContent = String(r.mph);
   (document.activeElement as HTMLElement | null)?.blur();
+  audio.speed = r.v;
+  audio.braking = false;
   phase = 'drive';
+}
+
+// ---------------------------------------------------------------------------
+// Hazard run and Stop on the line: several stops in a row, with no menus
+// in between. A Hazard run ends when the lives run out; Stop on the line
+// is five rounds.
+// ---------------------------------------------------------------------------
+
+interface Journey {
+  mode: 'run' | 'line';
+  vehicle: Vehicle;
+  /** Number of the stop being played, from 0. */
+  index: number;
+  lives: number;
+  /** Clean stops in a row. */
+  streak: number;
+  score: number;
+  previousBest: number;
+  records: StopRecord[];
+}
+let journey: Journey | null = null;
+let journeyTimer = 0;
+let bannerTimer = 0;
+
+function startJourney(mode: 'run' | 'line'): void {
+  journey = { mode, vehicle: settings.vehicle, index: 0, lives: RUN_LIVES, streak: 0, score: 0, previousBest: loadBest(mode), records: [] };
+  nextLeg();
+}
+
+/** Start the stop at journey.index. Also used to retry it after a pause. */
+function nextLeg(): void {
+  const j = journey;
+  if (!j) return;
+  ui.stopcard.classList.add('hidden');
+  if (j.mode === 'line') {
+    startLine(j);
+  } else {
+    const leg = pickLeg(j.index, j.vehicle, Math.random);
+    // The first stop of a stage waits a little longer, so its banner can be read.
+    const appearT = (leg.newStage ? 2.6 : 1.5) + Math.random() * 3.4;
+    startHazard({ mode: 'run', vehicle: j.vehicle, surface: leg.surface, mph: leg.mph, margin: leg.margin, appearT });
+    if (leg.newStage) {
+      showBanner(`Stage ${leg.stage + 1}: ${leg.stageName}`, `${leg.mph} mph. ${leg.stageNote}`, 2400);
+      if (j.index > 0) sound.jingle('stage');
+    } else {
+      showBanner(`${leg.mph} mph`, `${SURFACE_LABEL[leg.surface]} road`, 1300, true);
+    }
+  }
+  ui.jhud.classList.remove('hidden');
+  showJourneyHud();
+}
+
+function startLine(j: Journey): void {
+  changed = null;
+  const round = lineRound(j.index, j.vehicle, Math.random);
+  const v = mphToMs(round.mph);
+  const grip = vehicleGrip(j.vehicle, round.surface);
+  world.setVehicle(j.vehicle);
+  setUpFixedRoad(round.surface, Math.floor(Math.random() * 1e9));
+  world.setStopLine(round.lineP);
+  world.addLabel('Stop line', round.lineP, 5.6, 'hazard');
+  idealLabel = null;
+  run = {
+    mode: 'line',
+    lineP: round.lineP,
+    ff: 1,
+    vehicle: j.vehicle,
+    lag: VEHICLES[j.vehicle].brakeLagS,
+    surface: round.surface,
+    mph: round.mph,
+    v,
+    grip,
+    decel: grip * G,
+    ideal: vehicleStop(v, HIGHWAY_CODE_REACTION_S, j.vehicle, round.surface),
+    hazardKind: null,
+    hazardP: Infinity,
+    plannedAppearT: Infinity,
+    startMs: performance.now(),
+    appearMs: null,
+    appearT: null,
+    brakeT: null,
+    reaction: null,
+    endT: null,
+    hit: false,
+    impactSpeed: 0,
+    guess: 0,
+  };
+  showDriveUi(run);
+  showBanner(`Round ${j.index + 1} of ${LINE_ROUNDS.length}`, `${round.mph} mph, ${SURFACE_LABEL[round.surface].toLowerCase()} road`, 1700);
+}
+
+function showBanner(title: string, sub: string, ms: number, small = false): void {
+  $('banner-title').textContent = title;
+  $('banner-sub').textContent = sub;
+  ui.banner.classList.toggle('small', small);
+  // Restart the entrance animation.
+  ui.banner.classList.add('hidden');
+  void ui.banner.offsetWidth;
+  ui.banner.classList.remove('hidden');
+  window.clearTimeout(bannerTimer);
+  bannerTimer = window.setTimeout(() => ui.banner.classList.add('hidden'), ms);
+}
+
+function showJourneyHud(): void {
+  const j = journey;
+  if (!j) return;
+  const run = j.mode === 'run';
+  ui.jhudLives.classList.toggle('hidden', !run);
+  ui.jhudLives.innerHTML = '♥'.repeat(j.lives) + `<span class="lost">${'♥'.repeat(RUN_LIVES - j.lives)}</span>`;
+  ui.jhudLives.setAttribute('aria-label', `${j.lives} of ${RUN_LIVES} lives`);
+  const mult = multiplier(j.streak);
+  ui.jhudMult.textContent = run ? `×${mult}` : `Round ${Math.min(j.index + 1, LINE_ROUNDS.length)}/${LINE_ROUNDS.length}`;
+  ui.jhudMult.classList.toggle('hot', run && mult > 1);
+  ui.jhudScore.textContent = j.score.toLocaleString('en-GB');
+}
+
+function showCard(bad: boolean, word: string, big: string, sub: string, points: string): void {
+  $('sc-word').textContent = word;
+  $('sc-big').textContent = big;
+  $('sc-sub').textContent = sub;
+  $('sc-points').textContent = points;
+  ui.stopcard.classList.toggle('bad', bad);
+  ui.banner.classList.add('hidden');
+  ui.stopcard.classList.add('hidden');
+  void ui.stopcard.offsetWidth;
+  ui.stopcard.classList.remove('hidden');
+}
+
+/** The vehicle has stopped, hit the hazard or crossed the line: score it and move on. */
+function journeyStopDone(early = false): void {
+  const j = journey!;
+  const r = run!;
+  const blank = { mph: r.mph, surface: r.surface, reaction: r.reaction, impactMph: 0, hazardName: hazardName(r.hazardKind), idealGap: 0, multiplier: 1 };
+  let rec: StopRecord;
+  if (r.mode === 'line') {
+    const braking = brakingDistanceOf(r);
+    const stopP = motionAt(r, r.endT!).p;
+    const gap = r.lineP - stopP;
+    const score = scoreLineStop(gap, braking);
+    const crossMph = gap < 0 ? msToMph(speedAtPosition(r, r.lineP)) : 0;
+    rec = { ...blank, kind: 'line', reaction: null, gap, impactMph: crossMph, braking, base: score.total, points: score.total };
+    if (gap < 0) {
+      showCard(true, 'Over the line', `${fmtM(-gap)} over`, r.brakeT === null ? 'You did not brake.' : `Still doing ${Math.round(crossMph)} mph at the line.`, '+0');
+    } else {
+      const word = score.total >= 900 ? 'Spot on' : score.total >= 600 ? 'Close' : 'Plenty of room';
+      showCard(false, word, `${fmtM(gap)} short`, `Braking took ${fmtM(braking)} from ${r.mph} mph.`, `+${score.total.toLocaleString('en-GB')}`);
+    }
+  } else if (early) {
+    j.lives--;
+    j.streak = 0;
+    rec = { ...blank, kind: 'early', reaction: null, gap: 0, braking: 0, base: 0, points: 0 };
+    showCard(true, 'Too early', 'No hazard yet', 'Brake only when something moves into your road.', 'Life lost');
+  } else {
+    const dHazard = r.hazardP - r.v * r.appearT!;
+    const actual = r.reaction === null ? null : stoppingDistance(r.v, r.reaction, r.grip, r.lag);
+    const idealGap = dHazard - r.ideal.total;
+    const gap = r.hit || !actual ? 0 : dHazard - actual.total;
+    const braking = brakingDistanceOf(r);
+    if (r.hit) {
+      j.lives--;
+      j.streak = 0;
+      const impactMph = msToMph(r.impactSpeed);
+      rec = { ...blank, kind: 'hit', gap: 0, impactMph, idealGap, braking, base: 0, points: 0 };
+      showCard(
+        true,
+        `Hit the ${rec.hazardName}`,
+        `${Math.round(impactMph)} mph`,
+        r.reaction === null
+          ? `You did not brake. An alert driver stops ${fmtM(idealGap)} short.`
+          : `You reacted in ${r.reaction.toFixed(2)} s. An alert driver stops ${fmtM(idealGap)} short.`,
+        'Life lost',
+      );
+    } else {
+      const bestGap = dHazard - stoppingDistance(r.v, RUN_REACTION_BEST_S, r.grip, r.lag).total;
+      const base = scoreRunStop(r.reaction!, gap, bestGap);
+      const mult = multiplier(j.streak);
+      j.streak++;
+      rec = { ...blank, kind: 'stop', gap, idealGap, braking, base, multiplier: mult, points: base * mult };
+      showCard(
+        false,
+        reactionRating(r.reaction!),
+        `${r.reaction!.toFixed(2)} s`,
+        `Stopped ${fmtM(gap)} short of the ${rec.hazardName}.`,
+        mult > 1 ? `+${base} ×${mult} = ${rec.points.toLocaleString('en-GB')}` : `+${base}`,
+      );
+    }
+  }
+  j.records.push(rec);
+  j.score += rec.points;
+  showJourneyHud();
+  const bad = rec.kind === 'hit' || rec.kind === 'early' || (rec.kind === 'line' && rec.gap < 0);
+  sound.jingle(bad ? 'bad' : rec.base >= 800 ? 'great' : 'good');
+  const over = j.mode === 'run' ? j.lives <= 0 : j.index + 1 >= LINE_ROUNDS.length;
+  window.clearTimeout(journeyTimer);
+  journeyTimer = window.setTimeout(() => {
+    if (journey !== j) return;
+    if (over) {
+      endJourney();
+    } else {
+      j.index++;
+      nextLeg();
+    }
+  }, bad ? 2600 : 1900);
+}
+
+/** Distance (m) from pressing the brake to standing still. */
+const brakingDistanceOf = (r: Run) => r.v * r.lag + (r.v * r.v) / (2 * r.decel);
+
+function endJourney(): void {
+  const j = journey!;
+  saveBest(j.mode, j.score);
+  ui.stopcard.classList.add('hidden');
+  ui.banner.classList.add('hidden');
+  ui.jhud.classList.add('hidden');
+  ui.hud.classList.add('hidden');
+  sound.jingle('over');
+  // A run that ended on a hit is shown again from the side before the summary.
+  if (canReplay()) startReplay();
+  else showSummary();
+}
+
+const canReplay = () => !!run && isHazardMode(run.mode) && run.appearT !== null && run.endT !== null;
+
+function showSummary(): void {
+  const j = journey!;
+  phase = 'results';
+  renderSummary({ mode: j.mode, vehicle: j.vehicle, score: j.score, previousBest: j.previousBest, records: j.records, canReplay: canReplay() });
+  revealPanel(ui.summary, 'sum-again');
 }
 
 let idealLabel: HTMLDivElement | null = null;
@@ -305,7 +621,17 @@ function motionAt(r: Run, t: number): { p: number; speed: number } {
 }
 
 function onBrake(timeStamp: number): void {
-  if (phase !== 'drive' || !run || run.mode !== 'hazard' || run.brakeT !== null) return;
+  if (phase !== 'drive' || !run || run.brakeT !== null) return;
+  if (run.mode === 'line') {
+    // The player chooses the moment: there is nothing to react to.
+    run.brakeT = Math.max(0, (timeStamp - run.startMs) / 1000);
+    run.ff = fastForward(run.v, run.grip);
+    world.kick(0.12);
+    return;
+  }
+  if (!isHazardMode(run.mode)) return;
+  // Between stops, a tap meant for the last one should not count against this one.
+  if (journey && timeStamp - run.startMs < 400) return;
   if (run.appearMs === null || run.appearT === null) {
     falseStart('You braked before anything appeared. Brake only when you see a hazard.');
     return;
@@ -317,11 +643,18 @@ function onBrake(timeStamp: number): void {
   }
   run.reaction = reaction;
   run.brakeT = run.appearT + reaction;
+  if (journey) run.ff = fastForward(run.v, run.grip);
+  world.kick(0.12);
 }
 
 function falseStart(text: string): void {
-  phase = 'message';
   ui.brakeHint.classList.add('hidden');
+  if (journey) {
+    phase = 'halted';
+    journeyStopDone(true);
+    return;
+  }
+  phase = 'message';
   showMessage('False start', text, [
     { label: 'Try again', primary: true, action: startRun },
     { label: 'Menu', action: showMenu },
@@ -356,6 +689,14 @@ function showMenu(): void {
   phase = 'menu';
   run = null;
   changed = null;
+  journey = null;
+  window.clearTimeout(journeyTimer);
+  window.clearTimeout(bannerTimer);
+  world.setStopLine(null);
+  ui.summary.classList.add('hidden');
+  ui.jhud.classList.add('hidden');
+  ui.banner.classList.add('hidden');
+  ui.stopcard.classList.add('hidden');
   world.clearLabels();
   world.clearPaint();
   world.clearHazard();
@@ -415,11 +756,12 @@ canvas.addEventListener('pointercancel', endDrag);
 
 document.addEventListener('visibilitychange', () => {
   // Predict the stop plays out on its own, so only the hazard stop needs pausing.
-  if (document.hidden && phase === 'drive' && run?.mode === 'hazard') {
+  if (document.hidden && phase === 'drive' && run && run.mode !== 'predict' && run.mode !== 'changed') {
     phase = 'message';
     ui.brakeHint.classList.add('hidden');
-    showMessage('Paused', 'The game was hidden during the drive, so that run does not count.', [
-      { label: 'Try again', primary: true, action: startRun },
+    ui.banner.classList.add('hidden');
+    showMessage('Paused', `The game was hidden during the drive, so that ${journey ? 'stop' : 'run'} does not count.`, [
+      { label: journey ? 'Carry on' : 'Try again', primary: true, action: journey ? nextLeg : startRun },
       { label: 'Menu', action: showMenu },
     ]);
   }
@@ -428,6 +770,9 @@ document.addEventListener('visibilitychange', () => {
 $('start').addEventListener('click', startRun);
 $('again').addEventListener('click', startRun);
 $('change').addEventListener('click', showMenu);
+$('sum-again').addEventListener('click', startRun);
+$('sum-menu').addEventListener('click', showMenu);
+$('sum-replay').addEventListener('click', () => startReplay());
 $('replay').addEventListener('click', () => startReplay());
 ui.skip.addEventListener('click', () => finishReplay());
 window.addEventListener('resize', () => {
@@ -441,12 +786,14 @@ window.addEventListener('resize', () => {
 
 function updateDrive(nowMs: number, dt: number): void {
   const r = run!;
-  const t = (nowMs - r.startMs) / 1000;
+  const real = (nowMs - r.startMs) / 1000;
+  // Long slides play faster than real time once the brake is pressed.
+  const t = r.ff > 1 && r.brakeT !== null && real > r.brakeT ? r.brakeT + (real - r.brakeT) * r.ff : real;
   let { p, speed } = motionAt(r, t);
 
   // Hazard appears on the first frame at or after its planned time.
   let justAppeared = false;
-  if (r.mode === 'hazard' && r.appearMs === null && t >= r.plannedAppearT) justAppeared = true;
+  if (isHazardMode(r.mode) && r.appearMs === null && t >= r.plannedAppearT) justAppeared = true;
 
   if (p >= r.hazardP && r.appearT !== null) {
     // The car reached the hazard while still moving: sudden halt.
@@ -459,7 +806,14 @@ function updateDrive(nowMs: number, dt: number): void {
   } else if (speed === 0 && r.brakeT !== null) {
     r.endT = r.brakeT + r.lag + r.v / r.decel;
     halt(false);
+  } else if (r.mode === 'line' && r.brakeT === null && p >= r.lineP + 8) {
+    // Straight through the red light without braking.
+    r.endT = t;
+    halt(false);
   }
+  const fast = r.ff > 1 && r.brakeT !== null && t > r.brakeT && phase === 'drive';
+  ui.hudFf.classList.toggle('hidden', !fast);
+  if (fast) ui.hudFf.textContent = `▶▶ ${r.ff.toFixed(1)}×`;
 
   world.setCar(p, speed, r.brakeT !== null && t >= r.brakeT, dt);
   if (r.brakeT !== null && t >= r.brakeT && !r.brakeHeard) {
@@ -471,7 +825,7 @@ function updateDrive(nowMs: number, dt: number): void {
   world.updateHazard(r.appearT === null ? (justAppeared ? 0 : -1) : t - r.appearT);
   // The faint ideal marker shows where an alert driver would stop if a hazard
   // appeared now. Once the hazard appears it stays where they would stop.
-  if (r.mode === 'hazard') {
+  if (isHazardMode(r.mode)) {
     const markerP = r.appearT === null ? p + r.ideal.total : r.v * r.appearT + r.ideal.total;
     world.setIdealMarker(markerP);
     if (idealLabel) world.moveLabel(idealLabel, markerP);
@@ -513,8 +867,12 @@ function halt(hit: boolean): void {
     ui.flash.classList.add('on');
     requestAnimationFrame(() => requestAnimationFrame(() => ui.flash.classList.remove('on')));
   }
+  if (journey) {
+    journeyStopDone();
+    return;
+  }
   window.setTimeout(() => {
-    if (phase === 'halted') startReplay();
+    if (phase === 'halted' && !journey) startReplay();
   }, hit ? 1100 : 900);
 }
 
@@ -542,6 +900,7 @@ function startReplay(): void {
   if (!r || r.appearT === null || r.endT === null) return;
   phase = 'replay';
   ui.results.classList.add('hidden');
+  ui.summary.classList.add('hidden');
   ui.hud.classList.add('hidden');
   ui.skip.classList.remove('hidden');
   world.clearPaint();
@@ -557,7 +916,7 @@ function startReplay(): void {
   const predict = r.mode === 'predict';
   const guessP = appearP + r.guess;
 
-  const placed = r.mode !== 'hazard';
+  const placed = !isHazardMode(r.mode);
   // What changed?: the second stop is shown against where the first one ended.
   const oldStopP = changed?.stage === 'after' ? appearP + changed.oldTotal : null;
   const hasGuess = predict || oldStopP !== null;
@@ -675,6 +1034,10 @@ function finishReplay(delay = 0): void {
 
 function showResults(): void {
   const r = run!;
+  if (journey) {
+    showSummary();
+    return;
+  }
   if (r.mode === 'predict') {
     showPredictResults(r);
     return;
@@ -713,19 +1076,21 @@ function showResults(): void {
   revealResults();
 }
 
-function revealResults(): void {
-  ui.results.classList.remove('hidden');
-  ui.results.scrollTop = 0;
+const revealResults = () => revealPanel(ui.results, 'again');
+
+function revealPanel(panel: HTMLElement, focusId: string): void {
+  panel.classList.remove('hidden');
+  panel.scrollTop = 0;
 
   // Keep the painted road visible beside or above the results panel.
-  const rect = ui.results.getBoundingClientRect();
+  const rect = panel.getBoundingClientRect();
   const W = window.innerWidth;
   const H = window.innerHeight;
   const onRight = rect.left > W * 0.3;
   world.setInset(onRight ? { right: W - rect.left + 8, bottom: 0 } : { right: 0, bottom: Math.min(H * 0.6, H - rect.top + 8) });
   if (!onRight) world.setLabelClip(H - rect.top + 8);
   world.reframeSide();
-  ($('again') as HTMLButtonElement).focus({ preventScroll: true });
+  ($(focusId) as HTMLButtonElement).focus({ preventScroll: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -757,6 +1122,8 @@ function fixedRun(mode: Mode, sc: Scenario, lineP: number): Run {
   world.setVehicle(sc.vehicle);
   return {
     mode,
+    lineP: Infinity,
+    ff: 1,
     vehicle: sc.vehicle,
     lag: VEHICLES[sc.vehicle].brakeLagS,
     surface: sc.surface,
@@ -786,6 +1153,7 @@ const lineOf = (r: Run) => r.v * (r.appearT ?? 0);
 /** Reset the world for a run with no hazard, painting the line where the driver sees one. */
 function setUpFixedRoad(surface: Surface, seed: number): void {
   world.setSurface(surface);
+  world.setStopLine(null);
   world.buildScenery(seed, null);
   world.clearHazard();
   world.clearPaint();
@@ -800,6 +1168,7 @@ function setUpFixedRoad(surface: Surface, seed: number): void {
 function hidePanels(): void {
   ui.menu.classList.add('hidden');
   ui.results.classList.add('hidden');
+  ui.summary.classList.add('hidden');
   ui.message.classList.add('hidden');
   ui.brakeHint.classList.add('hidden');
   ui.predictHint.classList.add('hidden');
@@ -1083,6 +1452,10 @@ muteBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
   hazardVisible: run?.appearMs != null,
   hazardKind: run?.hazardKind,
   mode: run?.mode,
+  journey: journey && { mode: journey.mode, index: journey.index, lives: journey.lives, streak: journey.streak, score: journey.score },
+  lineP: run?.lineP,
+  braking: run ? brakingDistanceOf(run) : undefined,
+  carP: run && phase === 'drive' ? run.v * ((performance.now() - run.startMs) / 1000) : undefined,
   guess: run?.guess,
   changedStage: changed?.stage,
   crossActual: changed?.crossActual,
